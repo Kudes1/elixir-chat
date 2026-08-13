@@ -31,6 +31,30 @@ defmodule ElixirChatWeb.ConnCase do
     end
   end
 
+  def register_user(attrs \\ %{}) do
+    defaults = %{
+      login: "user#{System.unique_integer([:positive])}",
+      display_name: "Test User",
+      password: "long-test-password"
+    }
+
+    %ElixirChat.Accounts.User{}
+    |> ElixirChat.Accounts.User.registration_changeset(
+      Map.merge(defaults, attrs),
+      Map.get(attrs, :role, :user)
+    )
+    |> ElixirChat.Repo.insert!()
+  end
+
+  def log_in_user(conn, user) do
+    token = ElixirChat.Accounts.generate_session_token(user)
+
+    Plug.Test.init_test_session(conn, %{
+      user_token: token,
+      live_socket_id: "users_sessions:#{user.id}"
+    })
+  end
+
   setup tags do
     ElixirChat.DataCase.setup_sandbox(tags)
     {:ok, conn: Phoenix.ConnTest.build_conn()}

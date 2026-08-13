@@ -17,6 +17,35 @@ defmodule ElixirChat.Release do
     Code.eval_file(Application.app_dir(@app, "priv/repo/seeds.exs"))
   end
 
+  def admin do
+    load_app()
+    Application.ensure_all_started(@app)
+
+    result =
+      case System.fetch_env!("ORBIT_ADMIN_COMMAND") do
+        "bootstrap" ->
+          ElixirChat.Accounts.bootstrap_invitation(
+            System.fetch_env!("ORBIT_ADMIN_LOGIN"),
+            System.fetch_env!("ORBIT_ADMIN_NAME")
+          )
+
+        "transfer" ->
+          ElixirChat.Accounts.transfer_admin(System.fetch_env!("ORBIT_ADMIN_LOGIN"))
+
+        "reset" ->
+          ElixirChat.Accounts.admin_password_reset()
+      end
+
+    case result do
+      {:ok, _record, token} -> IO.puts(invitation_url(token))
+      {:ok, _record} -> IO.puts("Administrator transferred.")
+      {:error, reason} -> raise "admin command failed: #{inspect(reason)}"
+    end
+  end
+
+  defp invitation_url(token),
+    do: System.get_env("ORBIT_URL", "http://localhost:4000") <> "/invitation/" <> token
+
   defp load_app do
     Application.load(@app)
   end

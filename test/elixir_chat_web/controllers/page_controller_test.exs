@@ -4,18 +4,18 @@ defmodule ElixirChatWeb.PageControllerTest do
   alias ElixirChat.Chat.Channel
   alias ElixirChat.Repo
 
-  test "GET / redirects to general and creates a stable guest session", %{conn: conn} do
-    channel = Repo.insert!(Channel.changeset(%Channel{}, %{name: "general", kind: :public}))
+  test "GET / redirects guests to login", %{conn: conn} do
+    Repo.insert!(Channel.changeset(%Channel{}, %{name: "general", kind: :public}))
 
     conn = get(conn, ~p"/")
 
-    assert redirected_to(conn) == ~p"/channels/#{channel.id}"
-    assert is_binary(get_session(conn, :guest_id))
-    assert get_session(conn, :visitor_name) =~ "Гость "
+    assert redirected_to(conn) == ~p"/login"
   end
 
-  test "GET / redirects to the empty state when no public channel exists", %{conn: conn} do
-    conn = get(conn, ~p"/")
+  test "GET / redirects an authenticated user to the empty state when no channel exists", %{
+    conn: conn
+  } do
+    conn = conn |> log_in_user(register_user()) |> get(~p"/")
     assert redirected_to(conn) == ~p"/channels"
   end
 end

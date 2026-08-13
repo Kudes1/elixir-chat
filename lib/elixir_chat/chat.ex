@@ -43,7 +43,7 @@ defmodule ElixirChat.Chat do
     Message
     |> where([message], message.channel_id == ^channel_id)
     |> order_by([message], asc: message.inserted_at, asc: message.id)
-    |> preload(:channel)
+    |> preload([:channel, :user])
     |> Repo.all()
   end
 
@@ -60,15 +60,15 @@ defmodule ElixirChat.Chat do
 
   def subscribe(channel_id), do: Phoenix.PubSub.subscribe(@pubsub, topic(channel_id))
 
-  def create_message(%Channel{} = channel, attrs) do
+  def create_message(%ElixirChat.Accounts.Scope{user: user}, %Channel{} = channel, attrs) do
     result =
-      %Message{channel_id: channel.id}
+      %Message{channel_id: channel.id, user_id: user.id, author_name: user.display_name}
       |> Message.changeset(attrs)
       |> Repo.insert()
 
     case result do
       {:ok, message} ->
-        message = Repo.preload(message, :channel)
+        message = Repo.preload(message, [:channel, :user])
         Phoenix.PubSub.broadcast(@pubsub, topic(channel.id), {:message_created, message})
         {:ok, message}
 
@@ -103,7 +103,7 @@ defmodule ElixirChat.Chat do
     Message
     |> where([message], message.channel_id == ^channel_id)
     |> order_by([message], desc: message.inserted_at, desc: message.id)
-    |> preload(:channel)
+    |> preload([:channel, :user])
   end
 
   defp message_page(query, page_size) do

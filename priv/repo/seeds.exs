@@ -18,17 +18,23 @@ Enum.each(channels, fn attrs ->
          from message in ElixirChat.Chat.Message, where: message.channel_id == ^channel.id
        ) do
     Repo.insert!(
-      ElixirChat.Chat.Message.changeset(%ElixirChat.Chat.Message{channel_id: channel.id}, %{
-        author_name: "Ирина",
-        body: "Добро пожаловать в Orbit! Это наш новый командный чат."
-      })
+      ElixirChat.Chat.Message.historical_changeset(
+        %ElixirChat.Chat.Message{channel_id: channel.id},
+        %{
+          author_name: "Ирина",
+          body: "Добро пожаловать в Orbit! Это наш новый командный чат."
+        }
+      )
     )
 
     Repo.insert!(
-      ElixirChat.Chat.Message.changeset(%ElixirChat.Chat.Message{channel_id: channel.id}, %{
-        author_name: "Максим",
-        body: "Отлично, я уже здесь. Давайте сделаем его удобным для всей команды."
-      })
+      ElixirChat.Chat.Message.historical_changeset(
+        %ElixirChat.Chat.Message{channel_id: channel.id},
+        %{
+          author_name: "Максим",
+          body: "Отлично, я уже здесь. Давайте сделаем его удобным для всей команды."
+        }
+      )
     )
   end
 end)

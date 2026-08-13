@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+command_name="${1:-}"
+shift || true
+
+case "$command_name" in
+  bootstrap)
+    login=""
+    name=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --login) login="$2"; shift 2 ;;
+        --name) name="$2"; shift 2 ;;
+        *) echo "unknown option: $1" >&2; exit 2 ;;
+      esac
+    done
+    [ -n "$login" ] && [ -n "$name" ] || { echo "usage: orbit-admin bootstrap --login LOGIN --name NAME" >&2; exit 2; }
+    ORBIT_ADMIN_COMMAND=bootstrap ORBIT_ADMIN_LOGIN="$login" ORBIT_ADMIN_NAME="$name" exec "$(dirname "$0")/elixir_chat" eval 'ElixirChat.Release.admin()'
+    ;;
+  transfer)
+    [ "${1:-}" = "--to-login" ] && [ -n "${2:-}" ] || { echo "usage: orbit-admin transfer --to-login LOGIN" >&2; exit 2; }
+    ORBIT_ADMIN_COMMAND=transfer ORBIT_ADMIN_LOGIN="$2" exec "$(dirname "$0")/elixir_chat" eval 'ElixirChat.Release.admin()'
+    ;;
+  reset)
+    ORBIT_ADMIN_COMMAND=reset exec "$(dirname "$0")/elixir_chat" eval 'ElixirChat.Release.admin()'
+    ;;
+  *) echo "usage: orbit-admin bootstrap|transfer|reset" >&2; exit 2 ;;
+esac

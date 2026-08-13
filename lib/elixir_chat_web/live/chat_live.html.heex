@@ -25,7 +25,13 @@
 
       <div class="current-user">
         <div class="avatar avatar-violet">{initials(@visitor_name)}</div>
-        <div><strong>{@visitor_name}</strong><small>online</small></div>
+        <div>
+          <strong>{@visitor_name}</strong>
+          <small id="current-user-login" class="current-user-login">
+            @{@current_scope.user.login}
+          </small>
+        </div>
+        <.link href={~p"/logout"} method="delete" id="logout-link" class="text-xs">Выйти</.link>
       </div>
     </aside>
 
@@ -55,8 +61,22 @@
           </div>
           <div class="message-content">
             <div class="message-meta">
-              <strong>{message.author_name}</strong><time>{relative_time(message.inserted_at)}</time>
-            </div><p>{message.body}</p>
+              <strong>{message.author_name}</strong>
+              <button
+                :if={message.user}
+                id={"message-login-#{message.id}"}
+                type="button"
+                class="message-author-login"
+                phx-click="insert_mention"
+                phx-value-login={message.user.login}
+                aria-label={"Упомянуть @#{message.user.login}"}
+              >
+                @{message.user.login}
+              </button>
+              <span class="message-meta-separator">·</span>
+              <time>{relative_time(message.inserted_at)}</time>
+            </div>
+            <.message_body body={message.body} />
           </div>
         </article>
       </div>

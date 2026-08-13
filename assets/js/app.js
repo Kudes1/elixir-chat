@@ -67,6 +67,20 @@ const MessageComposer = {
       this.resize()
       this.el.focus()
     })
+    this.handleEvent("insert_mention", ({mention}) => {
+      const start = this.el.selectionStart ?? this.el.value.length
+      const end = this.el.selectionEnd ?? start
+      const before = this.el.value.slice(0, start)
+      const after = this.el.value.slice(end)
+      const leadingSpace = before.length > 0 && !/\s$/.test(before) ? " " : ""
+      const trailingSpace = after.length === 0 || !/^\s/.test(after) ? " " : ""
+      const inserted = `${leadingSpace}${mention}${trailingSpace}`
+
+      this.el.setRangeText(inserted, start, end, "end")
+      this.el.dispatchEvent(new Event("input", {bubbles: true}))
+      this.el.focus()
+      this.resize()
+    })
     this.resize()
   },
   updated() {

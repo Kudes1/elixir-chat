@@ -1,13 +1,13 @@
 defmodule ElixirChatWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :elixir_chat
 
-  # The session will be stored in the cookie and signed,
-  # this means its contents can be read but not tampered with.
-  # Set :encryption_salt if you would also like to encrypt it.
   @session_options [
     store: :cookie,
     key: "_elixir_chat_key",
     signing_salt: "4iggVPk2",
+    encryption_salt: "Q04x1zU6dH8A9yVk",
+    http_only: true,
+    secure: Application.compile_env(:elixir_chat, :env) == :prod,
     same_site: "Lax"
   ]
 

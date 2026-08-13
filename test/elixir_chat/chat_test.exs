@@ -5,6 +5,19 @@ defmodule ElixirChat.ChatTest do
   alias ElixirChat.Chat.{Channel, Message}
   alias ElixirChat.Repo
 
+  setup do
+    user =
+      %ElixirChat.Accounts.User{}
+      |> ElixirChat.Accounts.User.registration_changeset(%{
+        login: "user#{System.unique_integer([:positive])}",
+        display_name: "Ирина",
+        password: "long-test-password"
+      })
+      |> Repo.insert!()
+
+    %{scope: ElixirChat.Accounts.Scope.for_user(user)}
+  end
+
   test "only public channels are visible and general is the default" do
     other = channel_fixture(%{name: "alpha"})
     general = channel_fixture(%{name: "general"})
@@ -16,13 +29,13 @@ defmodule ElixirChat.ChatTest do
     assert {:error, :not_found} = Chat.get_channel(private.id)
   end
 
-  test "message input is normalized and channel_id cannot be overridden" do
+  test "message input is normalized and authorship cannot be overridden", %{scope: scope} do
     channel = channel_fixture(%{name: "general"})
     other = channel_fixture(%{name: "other"})
 
     assert {:ok, message} =
-             Chat.create_message(channel, %{
-               author_name: "  Ирина  ",
+             Chat.create_message(scope, channel, %{
+               author_name: "Подмена",
                body: "  привет  ",
                channel_id: other.id
              })
@@ -32,17 +45,17 @@ defmodule ElixirChat.ChatTest do
     assert message.channel_id == channel.id
 
     assert {:error, changeset} =
-             Chat.create_message(channel, %{author_name: "Ирина", body: "   "})
+             Chat.create_message(scope, channel, %{author_name: "Подмена", body: "   "})
 
     assert "can't be blank" in errors_on(changeset).body
   end
 
-  test "cursor pagination has no gaps or duplicates" do
+  test "cursor pagination has no gaps or duplicates", %{scope: scope} do
     channel = channel_fixture(%{name: "general"})
 
     messages =
       for number <- 1..55 do
-        message_fixture(channel, %{body: "message #{number}"})
+        message_fixture(scope, channel, %{body: "message #{number}"})
       end
 
     {recent, true} = Chat.list_recent_messages(channel.id)
@@ -66,9 +79,9 @@ defmodule ElixirChat.ChatTest do
     Repo.insert!(Channel.changeset(%Channel{}, Map.merge(defaults, attrs)))
   end
 
-  defp message_fixture(channel, attrs) do
+  defp message_fixture(scope, channel, attrs) do
     defaults = %{author_name: "Ирина", body: "message"}
-    {:ok, message} = Chat.create_message(channel, Map.merge(defaults, attrs))
+    {:ok, message} = Chat.create_message(scope, channel, Map.merge(defaults, attrs))
     message
   end
 end

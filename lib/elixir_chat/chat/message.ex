@@ -9,11 +9,23 @@ defmodule ElixirChat.Chat.Message do
     field :body, :string
 
     belongs_to :channel, ElixirChat.Chat.Channel
+    belongs_to :user, ElixirChat.Accounts.User
 
     timestamps(type: :utc_datetime)
   end
 
   def changeset(message, attrs) do
+    message
+    |> cast(attrs, [:body])
+    |> update_change(:body, &String.trim/1)
+    |> validate_required([:author_name, :body, :channel_id, :user_id])
+    |> validate_length(:author_name, min: 2, max: 40)
+    |> validate_length(:body, min: 1, max: 4_000)
+    |> foreign_key_constraint(:channel_id)
+    |> foreign_key_constraint(:user_id)
+  end
+
+  def historical_changeset(message, attrs) do
     message
     |> cast(attrs, [:author_name, :body])
     |> update_change(:author_name, &String.trim/1)

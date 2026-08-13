@@ -36,6 +36,7 @@ RUN mix deps.get --only $MIX_ENV && mix deps.compile
 COPY priv priv
 COPY lib lib
 COPY assets assets
+COPY rel rel
 
 RUN mix compile
 COPY config/runtime.exs config/
@@ -53,7 +54,7 @@ ENV MIX_ENV=prod \
 
 COPY --from=builder /app/_build/prod/rel/elixir_chat ./
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh && chown -R nobody:nogroup /app
+RUN chmod +x /app/docker-entrypoint.sh /app/bin/orbit-admin && chown -R nobody:nogroup /app
 
 USER nobody
 CMD ["/app/docker-entrypoint.sh"]

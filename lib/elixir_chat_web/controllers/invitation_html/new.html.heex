@@ -1,0 +1,25 @@
+<Layouts.app flash={@flash} current_scope={@current_scope}>
+  <main class="mx-auto mt-20 max-w-md p-8">
+    <h1 class="text-3xl font-bold">Задайте пароль</h1>
+    <p :if={@invitation && @invitation.login} class="mt-2">
+      Аккаунт: <strong>{@invitation.login}</strong> — {@invitation.display_name}
+    </p>
+    <.form for={@form} id="invitation-form" action={~p"/invitation"} class="mt-8 space-y-4">
+      <.input
+        field={@form[:password]}
+        id="new-password"
+        type="password"
+        label="Пароль (не менее 12 символов)"
+        required
+      />
+      <.input
+        field={@form[:password_confirmation]}
+        id="password-confirmation"
+        type="password"
+        label="Повторите пароль"
+        required
+      />
+      <button id="accept-invitation" class="btn btn-primary w-full">Сохранить</button>
+    </.form>
+  </main>
+</Layouts.app>

@@ -8,16 +8,15 @@ defmodule ElixirChatWeb.ChatLive do
   @presence_topic "presence:lobby"
 
   @impl true
-  def mount(_params, session, socket) do
-    guest_id = Map.fetch!(session, "guest_id")
-    visitor_name = Map.fetch!(session, "visitor_name")
+  def mount(_params, _session, socket) do
+    user = socket.assigns.current_scope.user
 
     if connected?(socket) do
       Phoenix.PubSub.subscribe(ElixirChat.PubSub, @presence_topic)
 
       {:ok, _ref} =
-        Presence.track(self(), @presence_topic, guest_id, %{
-          name: visitor_name,
+        Presence.track(self(), @presence_topic, to_string(user.id), %{
+          name: user.display_name,
           online_at: System.system_time(:second)
         })
     end
@@ -25,11 +24,10 @@ defmodule ElixirChatWeb.ChatLive do
     {:ok,
      socket
      |> assign(:page_title, "Orbit")
-     |> assign(:current_scope, nil)
      |> assign(:channels, Chat.list_channels())
      |> assign(:channel, nil)
      |> assign(:subscribed_channel_id, nil)
-     |> assign(:visitor_name, visitor_name)
+     |> assign(:visitor_name, user.display_name)
      |> assign(:online_count, presence_count())
      |> assign(:message_form, empty_message_form())
      |> assign(:oldest_message, nil)
@@ -56,9 +54,9 @@ defmodule ElixirChatWeb.ChatLive do
         %{assigns: %{channel: channel}} = socket
       )
       when not is_nil(channel) do
-    attrs = %{body: Map.get(params, "body", ""), author_name: socket.assigns.visitor_name}
+    attrs = %{body: Map.get(params, "body", "")}
 
-    case Chat.create_message(channel, attrs) do
+    case Chat.create_message(socket.assigns.current_scope, channel, attrs) do
       {:ok, message} ->
         {:noreply,
          socket
@@ -72,6 +70,11 @@ defmodule ElixirChatWeb.ChatLive do
   end
 
   def handle_event("send_message", _params, socket), do: {:noreply, socket}
+
+  @impl true
+  def handle_event("insert_mention", %{"login" => login}, socket) do
+    {:noreply, push_event(socket, "insert_mention", %{mention: "@#{login}"})}
+  end
 
   @impl true
   def handle_event("load_older_messages", _params, socket) do
@@ -169,4 +172,24 @@ defmodule ElixirChatWeb.ChatLive do
   end
 
   defp relative_time(datetime), do: Calendar.strftime(datetime, "%H:%M")
+
+  defp message_body(assigns) do
+    ~H"""
+    <p>
+      <%= for {kind, fragment} <- mention_fragments(@body) do %>
+        <span class={kind == :mention && "message-mention"}>{fragment}</span>
+      <% end %>
+    </p>
+    """
+  end
+
+  defp mention_fragments(body) do
+    ~r/(@[a-z0-9._-]+)/
+    |> Regex.split(body, include_captures: true, trim: true)
+    |> Enum.map(fn fragment ->
+      if Regex.match?(~r/^@[a-z0-9._-]+$/, fragment),
+        do: {:mention, fragment},
+        else: {:text, fragment}
+    end)
+  end
 end

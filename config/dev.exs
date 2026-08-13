@@ -1,5 +1,7 @@
 import Config
 
+config :elixir_chat, :env, :dev
+
 # Configure your database
 config :elixir_chat, ElixirChat.Repo,
   username: System.get_env("POSTGRES_USER", "postgres"),
