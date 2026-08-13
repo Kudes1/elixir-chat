@@ -1,0 +1,140 @@
+/* See the Tailwind configuration guide for advanced usage
+   https://tailwindcss.com/docs/configuration */
+
+@import "tailwindcss" source(none);
+@import "phoenix-colocated/elixir_chat/colocated.css";
+@source "../css";
+@source "../js";
+@source "../../lib/elixir_chat_web";
+/* Required for Tailwind to automatically pick up changes in colocated CSS files in dev */
+@source "../../_build/dev/phoenix-colocated/elixir_chat/*/";
+
+/* A Tailwind plugin that makes "hero-#{ICON}" classes available.
+   The heroicons installation itself is managed by your mix.exs */
+@plugin "../vendor/heroicons";
+
+/* daisyUI Tailwind Plugin. */
+@plugin "daisyui/packages/bundle/daisyui" {
+  themes: false;
+}
+
+/* daisyUI theme plugin.
+  We ship with two themes, a light one inspired on Phoenix colors and a dark one inspired
+  on Elixir colors. Build your own at: https://daisyui.com/theme-generator/ */
+@plugin "daisyui/packages/bundle/daisyui-theme" {
+  name: "dark";
+  default: false;
+  prefersdark: true;
+  color-scheme: "dark";
+  --color-base-100: oklch(30.33% 0.016 252.42);
+  --color-base-200: oklch(25.26% 0.014 253.1);
+  --color-base-300: oklch(20.15% 0.012 254.09);
+  --color-base-content: oklch(97.807% 0.029 256.847);
+  --color-primary: oklch(58% 0.233 277.117);
+  --color-primary-content: oklch(96% 0.018 272.314);
+  --color-secondary: oklch(58% 0.233 277.117);
+  --color-secondary-content: oklch(96% 0.018 272.314);
+  --color-accent: oklch(60% 0.25 292.717);
+  --color-accent-content: oklch(96% 0.016 293.756);
+  --color-neutral: oklch(37% 0.044 257.287);
+  --color-neutral-content: oklch(98% 0.003 247.858);
+  --color-info: oklch(58% 0.158 241.966);
+  --color-info-content: oklch(97% 0.013 236.62);
+  --color-success: oklch(60% 0.118 184.704);
+  --color-success-content: oklch(98% 0.014 180.72);
+  --color-warning: oklch(66% 0.179 58.318);
+  --color-warning-content: oklch(98% 0.022 95.277);
+  --color-error: oklch(58% 0.253 17.585);
+  --color-error-content: oklch(96% 0.015 12.422);
+  --radius-selector: 0.25rem;
+  --radius-field: 0.25rem;
+  --radius-box: 0.5rem;
+  --size-selector: 0.21875rem;
+  --size-field: 0.21875rem;
+  --border: 1.5px;
+  --depth: 1;
+  --noise: 0;
+}
+
+@plugin "daisyui/packages/bundle/daisyui-theme" {
+  name: "light";
+  default: true;
+  prefersdark: false;
+  color-scheme: "light";
+  --color-base-100: oklch(98% 0 0);
+  --color-base-200: oklch(96% 0.001 286.375);
+  --color-base-300: oklch(92% 0.004 286.32);
+  --color-base-content: oklch(21% 0.006 285.885);
+  --color-primary: oklch(70% 0.213 47.604);
+  --color-primary-content: oklch(98% 0.016 73.684);
+  --color-secondary: oklch(55% 0.027 264.364);
+  --color-secondary-content: oklch(98% 0.002 247.839);
+  --color-accent: oklch(0% 0 0);
+  --color-accent-content: oklch(100% 0 0);
+  --color-neutral: oklch(44% 0.017 285.786);
+  --color-neutral-content: oklch(98% 0 0);
+  --color-info: oklch(62% 0.214 259.815);
+  --color-info-content: oklch(97% 0.014 254.604);
+  --color-success: oklch(70% 0.14 182.503);
+  --color-success-content: oklch(98% 0.014 180.72);
+  --color-warning: oklch(66% 0.179 58.318);
+  --color-warning-content: oklch(98% 0.022 95.277);
+  --color-error: oklch(58% 0.253 17.585);
+  --color-error-content: oklch(96% 0.015 12.422);
+  --radius-selector: 0.25rem;
+  --radius-field: 0.25rem;
+  --radius-box: 0.5rem;
+  --size-selector: 0.21875rem;
+  --size-field: 0.21875rem;
+  --border: 1.5px;
+  --depth: 1;
+  --noise: 0;
+}
+
+/* Add variants based on LiveView classes */
+@custom-variant phx-click-loading (.phx-click-loading&, .phx-click-loading &);
+@custom-variant phx-submit-loading (.phx-submit-loading&, .phx-submit-loading &);
+@custom-variant phx-change-loading (.phx-change-loading&, .phx-change-loading &);
+
+/* Use the data attribute for dark mode  */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+/* Make LiveView wrapper divs transparent for layout */
+[data-phx-session], [data-phx-teleported-src] { display: contents }
+
+/* This file is for your main application CSS */
+
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #e8eaf0; background: #10141d; }
+html, body { height: 100%; overflow: hidden; }
+body { margin: 0; min-width: 320px; background: #10141d; }
+button, input { font: inherit; }
+button { cursor: pointer; }
+.chat-shell { display: grid; grid-template-columns: 72px 260px minmax(0, 1fr); height: 100dvh; min-height: 0; overflow: hidden; }
+.workspace-sidebar { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 20px 0; background: #181c28; border-right: 1px solid #292e3d; }
+.workspace-mark, .workspace-dot { display: grid; place-items: center; width: 38px; height: 38px; border: 0; border-radius: 12px; color: #f4f1ff; font-size: 16px; font-weight: 800; }
+.workspace-mark { margin-bottom: 12px; background: linear-gradient(145deg, #8c70ff, #4d35d5); box-shadow: 0 8px 22px #5140be66; }
+.workspace-dot { background: #282d3d; color: #aeb5c9; }
+.workspace-dot.active { outline: 2px solid #9b83ff; outline-offset: 3px; background: #3c3268; }
+.channel-sidebar { position: relative; display: flex; flex-direction: column; min-height: 0; padding: 26px 12px 18px; color: #b6bdcf; background: #202533; border-right: 1px solid #303649; }
+.workspace-header { display: flex; align-items: center; justify-content: space-between; padding: 0 10px 30px; color: #fff; }
+.eyebrow, .sidebar-label { margin: 0; color: #7f899f; font-size: 10px; font-weight: 800; letter-spacing: .12em; }
+.workspace-header h1 { margin: 5px 0 0; font-size: 22px; letter-spacing: -.04em; }
+.round-button, .workspace-header button, .sidebar-label button { border: 0; background: transparent; color: #9ca6bb; font-size: 20px; }
+.sidebar-label { display: flex; justify-content: space-between; align-items: center; padding: 0 10px 10px; }
+.sidebar-label button { font-size: 20px; line-height: 1; }
+.channel-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.channel-link, .direct-messages a { display: flex; align-items: center; gap: 9px; width: 100%; box-sizing: border-box; margin-bottom: 3px; padding: 8px 10px; border: 0; border-radius: 7px; color: #abb3c5; text-decoration: none; text-align: left; background: transparent; font-size: 14px; }
+.channel-link span { color: #79849b; font-weight: 700; font-size: 17px; }
+.channel-link:hover, .channel-link.selected { color: #fff; background: #393f53; }
+.channel-link.selected span { color: #aa91ff; }
+.direct-messages { margin-top: 30px; }
+.presence-dot, .online-indicator i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #43c59e; }
+.presence-dot.away { background: #e8b460; }
+.current-user { display: flex; align-items: center; gap: 9px; margin-top: auto; padding: 14px 8px 0; border-top: 1px solid #333a4d; }
+.current-user strong, .current-user small { display: block; }.current-user strong { color: #e9edf6; font-size: 13px; }.current-user small { color: #5bd3a7; font-size: 11px; }.current-user button { margin-left: auto; border: 0; background: transparent; color: #9ca6bb; font-size: 20px; }
+.conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100dvh; overflow: hidden; background: #141925; }
+.conversation-header { display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; min-height: 75px; padding: 0 32px; border-bottom: 1px solid #292f3f; background: #171c28; }.channel-title { color: #f6f7fb; font-size: 18px; font-weight: 760; }.conversation-header p { margin: 4px 0 0; color: #858fa5; font-size: 13px; }.header-actions { display: flex; align-items: center; gap: 18px; }.header-actions button { border: 0; color: #adb5c8; background: transparent; font-size: 22px; }.online-indicator { color: #aeb7ca; font-size: 13px; }.online-indicator i { margin-right: 6px; }
+.message-list { flex: 1 1 auto; min-height: 0; padding: 28px 32px; overflow: auto; overscroll-behavior: contain; }.message { display: flex; gap: 12px; max-width: 840px; padding: 10px 0; }.avatar { display: grid; flex: 0 0 auto; place-items: center; width: 36px; height: 36px; border-radius: 11px; color: #fff; font-size: 12px; font-weight: 800; }.avatar-0 { background: #d7657a; }.avatar-1 { background: #5e9dd4; }.avatar-2 { background: #8c73d4; }.avatar-3 { background: #d79a55; }.avatar-violet { background: #7159c8; }.message-content { padding-top: 1px; }.message-meta { display: flex; gap: 9px; align-items: baseline; }.message-meta strong { color: #edf0f7; font-size: 14px; }.message-meta time { color: #737d92; font-size: 11px; }.message p { margin: 4px 0 0; color: #c4cbd9; font-size: 14px; line-height: 1.55; white-space: pre-wrap; }
+.composer { display: flex; flex: 0 0 auto; gap: 10px; align-items: flex-end; margin: 8px 32px 26px; padding: 9px 8px 9px 16px; border: 1px solid #3b4356; border-radius: 10px; background: #202635; }.composer .fieldset { flex: 1 1 auto; min-width: 0; margin: 0; }.composer .fieldset label { display: block; width: 100%; }.composer textarea.chat-composer-input { display: block; box-sizing: border-box; width: 100%; min-height: 34px; max-height: 176px; padding: 7px 0; border: 0; outline: 0; resize: none; overflow-y: auto; color: #ecf0f8; background: transparent; line-height: 1.45; }.composer textarea.chat-composer-input::placeholder { color: #7b8498; }.composer button { display: grid; flex: 0 0 auto; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 8px; color: #fff; background: #7660de; font-size: 20px; }
+.empty-chat { display: grid; place-items: center; padding: 32px; color: #c4cbd9; text-align: center; }.empty-chat h2 { margin: 0 0 8px; color: #f6f7fb; }.empty-chat p { margin: 0; color: #858fa5; }
+@media (max-width: 720px) { .chat-shell { grid-template-columns: 58px minmax(0, 1fr); }.channel-sidebar { display: none; }.workspace-sidebar { padding-top: 16px; }.conversation-header, .message-list { padding-left: 18px; padding-right: 18px; }.header-actions button { display: none; }.composer { margin: 8px 18px 18px; }.online-indicator { font-size: 12px; } }

@@ -1,0 +1,87 @@
+<Layouts.app flash={@flash} current_scope={@current_scope}>
+  <main class="chat-shell">
+    <aside class="workspace-sidebar">
+      <div class="workspace-mark">O</div>
+    </aside>
+
+    <aside class="channel-sidebar">
+      <div class="workspace-header">
+        <div>
+          <p class="eyebrow">WORKSPACE</p><h1>Orbit</h1>
+        </div>
+      </div>
+
+      <nav class="channel-list" aria-label="Channels">
+        <div class="sidebar-label"><span>CHANNELS</span></div>
+        <.link
+          :for={channel <- @channels}
+          id={"channel-#{channel.id}"}
+          class={["channel-link", @channel && channel.id == @channel.id && "selected"]}
+          patch={~p"/channels/#{channel.id}"}
+        >
+          <span>#</span>{channel.name}
+        </.link>
+      </nav>
+
+      <div class="current-user">
+        <div class="avatar avatar-violet">{initials(@visitor_name)}</div>
+        <div><strong>{@visitor_name}</strong><small>online</small></div>
+      </div>
+    </aside>
+
+    <section :if={@channel} class="conversation" aria-label={"Channel #{@channel.name}"}>
+      <header class="conversation-header">
+        <div>
+          <div class="channel-title"># {@channel.name}</div><p>
+            {@channel.description || "Командный разговор"}
+          </p>
+        </div>
+        <div class="header-actions">
+          <span class="online-indicator"><i></i>{@online_count} online</span>
+        </div>
+      </header>
+
+      <div
+        id="messages"
+        class="message-list"
+        phx-update="stream"
+        phx-hook="MessageList"
+        role="log"
+        aria-live="polite"
+      >
+        <article :for={{dom_id, message} <- @streams.messages} id={dom_id} class="message">
+          <div class={["avatar", "avatar-#{rem(message.id, 4)}"]}>
+            {initials(message.author_name)}
+          </div>
+          <div class="message-content">
+            <div class="message-meta">
+              <strong>{message.author_name}</strong><time>{relative_time(message.inserted_at)}</time>
+            </div><p>{message.body}</p>
+          </div>
+        </article>
+      </div>
+
+      <.form for={@message_form} id="message-form" phx-submit="send_message" class="composer">
+        <.input
+          field={@message_form[:body]}
+          id="message-body"
+          type="textarea"
+          class="chat-composer-input"
+          rows="1"
+          autocomplete="off"
+          placeholder={"Написать в ##{@channel.name}"}
+          aria-label="Message"
+          phx-hook="MessageComposer"
+        />
+        <button id="send-message" type="submit" aria-label="Send message">↑</button>
+      </.form>
+    </section>
+
+    <section :if={is_nil(@channel)} id="empty-chat" class="conversation empty-chat">
+      <div>
+        <h2>Пока нет доступных каналов</h2>
+        <p>Добавьте публичный канал или запустите начальное заполнение базы.</p>
+      </div>
+    </section>
+  </main>
+</Layouts.app>

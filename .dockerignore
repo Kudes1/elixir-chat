@@ -1,0 +1,11 @@
+.git
+.agents
+.codex
+_build
+deps
+cover
+doc
+tmp
+.env
+npm-debug.log
+npm-debug.log
