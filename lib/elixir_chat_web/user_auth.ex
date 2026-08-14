@@ -5,6 +5,8 @@ defmodule ElixirChatWeb.UserAuth do
   alias ElixirChat.Accounts
   alias ElixirChat.Accounts.Scope
 
+  @session_persistence_version 1
+
   def log_in_user(conn, user) do
     token = Accounts.generate_session_token(user)
 
@@ -13,6 +15,7 @@ defmodule ElixirChatWeb.UserAuth do
     |> clear_session()
     |> put_session(:user_token, token)
     |> put_session(:live_socket_id, "users_sessions:#{user.id}")
+    |> put_session(:session_persistence_version, @session_persistence_version)
     |> redirect(to: ~p"/")
   end
 
@@ -23,11 +26,30 @@ defmodule ElixirChatWeb.UserAuth do
       do: ElixirChatWeb.Endpoint.broadcast(socket_id, "disconnect", %{})
 
     Accounts.delete_session_token(token)
-    conn |> configure_session(renew: true) |> clear_session() |> redirect(to: ~p"/login")
+
+    conn
+    |> configure_session(drop: true)
+    |> redirect(to: ~p"/login")
   end
 
   def fetch_current_scope(conn, _opts) do
-    user = conn |> get_session(:user_token) |> Accounts.get_user_by_session_token()
+    persistence_current? =
+      get_session(conn, :session_persistence_version) == @session_persistence_version
+
+    {user, renew?} =
+      conn
+      |> get_session(:user_token)
+      |> Accounts.get_user_by_session_token_and_renew()
+
+    conn =
+      if user && (renew? || !persistence_current?) do
+        conn
+        |> put_session(:session_persistence_version, @session_persistence_version)
+        |> configure_session(renew: true)
+      else
+        conn
+      end
+
     assign(conn, :current_scope, Scope.for_user(user))
   end
 

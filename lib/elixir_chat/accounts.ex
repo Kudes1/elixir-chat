@@ -6,6 +6,8 @@ defmodule ElixirChat.Accounts do
   alias ElixirChat.Chat.{Channel, ChannelMembership}
 
   @session_days 30
+  @session_renewal_window_days 29
+  @session_absolute_days 180
 
   def get_user_by_login_and_password(login, password)
       when is_binary(login) and is_binary(password) do
@@ -35,18 +37,67 @@ defmodule ElixirChat.Accounts do
 
   def get_user_by_session_token(token) when is_binary(token) do
     now = DateTime.utc_now(:second)
+    absolute_cutoff = DateTime.add(now, -@session_absolute_days, :day)
 
     Repo.one(
       from t in UserToken,
         join: u in assoc(t, :user),
         where:
           t.context == "session" and
-            t.token == ^hash(token) and t.expires_at > ^now and is_nil(u.disabled_at),
+            t.token == ^hash(token) and t.expires_at > ^now and
+            t.authenticated_at > ^absolute_cutoff and is_nil(u.disabled_at),
         select: u
     )
   end
 
   def get_user_by_session_token(_), do: nil
+
+  def get_user_by_session_token_and_renew(token) when is_binary(token) do
+    now = DateTime.utc_now(:second)
+    absolute_cutoff = DateTime.add(now, -@session_absolute_days, :day)
+
+    result =
+      Repo.one(
+        from t in UserToken,
+          join: u in assoc(t, :user),
+          where:
+            t.context == "session" and
+              t.token == ^hash(token) and t.expires_at > ^now and
+              t.authenticated_at > ^absolute_cutoff and is_nil(u.disabled_at),
+          select: {t, u}
+      )
+
+    case result do
+      {%UserToken{} = session_token, %User{} = user} ->
+        renewal_threshold = DateTime.add(now, @session_renewal_window_days, :day)
+
+        absolute_expiry =
+          DateTime.add(session_token.authenticated_at, @session_absolute_days, :day)
+
+        requested_expiry = DateTime.add(now, @session_days, :day)
+        renewed_expiry = Enum.min([requested_expiry, absolute_expiry], DateTime)
+
+        renew? =
+          DateTime.compare(session_token.expires_at, renewal_threshold) != :gt and
+            DateTime.after?(renewed_expiry, session_token.expires_at)
+
+        if renew? do
+          Repo.update_all(
+            from(t in UserToken,
+              where: t.id == ^session_token.id and t.expires_at == ^session_token.expires_at
+            ),
+            set: [expires_at: renewed_expiry]
+          )
+        end
+
+        {user, renew?}
+
+      nil ->
+        {nil, false}
+    end
+  end
+
+  def get_user_by_session_token_and_renew(_), do: {nil, false}
 
   def delete_session_token(token) when is_binary(token),
     do:

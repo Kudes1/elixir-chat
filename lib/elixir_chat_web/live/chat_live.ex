@@ -59,15 +59,19 @@ defmodule ElixirChatWeb.ChatLive do
   end
 
   @impl true
-  def handle_params(%{"id" => id}, _uri, %{assigns: %{live_action: :direct}} = socket) do
-    case Chat.get_direct_conversation(socket.assigns.current_scope, id) do
+  def handle_params(
+        %{"public_id" => public_id},
+        _uri,
+        %{assigns: %{live_action: :direct}} = socket
+      ) do
+    case Chat.get_direct_conversation_by_public_id(socket.assigns.current_scope, public_id) do
       {:ok, direct} -> {:noreply, load_direct_conversation(socket, direct)}
       {:error, :not_found} -> {:noreply, recover_from_missing_conversation(socket, :direct)}
     end
   end
 
-  def handle_params(%{"id" => id}, _uri, socket) do
-    case Chat.get_channel(socket.assigns.current_scope, id) do
+  def handle_params(%{"public_id" => public_id}, _uri, socket) do
+    case Chat.get_channel_by_public_id(socket.assigns.current_scope, public_id) do
       {:ok, channel} -> {:noreply, load_public_channel(socket, channel)}
       {:error, :not_found} -> {:noreply, recover_from_missing_conversation(socket, :channel)}
     end
@@ -136,7 +140,7 @@ defmodule ElixirChatWeb.ChatLive do
          socket
          |> assign(:channel_catalog_open?, false)
          |> refresh_channels()
-         |> push_patch(to: ~p"/channels/#{channel.id}")}
+         |> push_patch(to: ~p"/channels/#{channel.public_id}")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign(socket, :channel_form, to_form(changeset))}
@@ -153,7 +157,7 @@ defmodule ElixirChatWeb.ChatLive do
          socket
          |> assign(:channel_catalog_open?, false)
          |> refresh_channels()
-         |> push_patch(to: ~p"/channels/#{channel.id}")}
+         |> push_patch(to: ~p"/channels/#{channel.public_id}")}
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Не удалось вступить в канал.")}
@@ -287,7 +291,7 @@ defmodule ElixirChatWeb.ChatLive do
          |> assign(:direct_search_open?, false)
          |> assign(:direct_search_results, [])
          |> upsert_direct(direct, false)
-         |> push_patch(to: ~p"/direct/#{direct.id}")}
+         |> push_patch(to: ~p"/direct/#{direct.channel.public_id}")}
 
       {:error, _reason} ->
         {:noreply, put_flash(socket, :error, "Не удалось открыть личный диалог.")}
@@ -441,7 +445,7 @@ defmodule ElixirChatWeb.ChatLive do
       {:ok, channel} ->
         socket
         |> put_flash(:error, message)
-        |> push_patch(to: ~p"/channels/#{channel.id}")
+        |> push_patch(to: ~p"/channels/#{channel.public_id}")
 
       {:error, :not_found} ->
         socket
@@ -672,6 +676,7 @@ defmodule ElixirChatWeb.ChatLive do
   defp direct_item(direct, current_user_id) do
     %{
       id: direct.id,
+      public_id: direct.channel.public_id,
       direct: direct,
       other_user: DirectConversation.other_user(direct, current_user_id)
     }
@@ -827,7 +832,7 @@ defmodule ElixirChatWeb.ChatLive do
                 "channel-link",
                 @channel && is_nil(@direct_conversation_id) && channel.id == @channel.id && "selected"
               ]}
-              patch={~p"/channels/#{channel.id}"}
+              patch={~p"/channels/#{channel.public_id}"}
               phx-click={close_sidebar()}
             >
               <span aria-hidden="true">#</span><span class="channel-name">{channel.name}</span>
@@ -909,7 +914,7 @@ defmodule ElixirChatWeb.ChatLive do
                 :key={item.id}
                 id={"direct-conversation-#{item.id}"}
                 class={["channel-link direct-link", item.id == @direct_conversation_id && "selected"]}
-                patch={~p"/direct/#{item.id}"}
+                patch={~p"/direct/#{item.public_id}"}
                 phx-click={close_sidebar()}
               >
                 <.user_avatar

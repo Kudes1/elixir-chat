@@ -5,6 +5,7 @@ defmodule ElixirChat.Chat.Channel do
   import Ecto.Changeset
 
   schema "channels" do
+    field :public_id, Ecto.UUID, autogenerate: true
     field :name, :string
     field :description, :string
     field :kind, Ecto.Enum, values: [:public, :private]

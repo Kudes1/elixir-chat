@@ -50,6 +50,72 @@ defmodule ElixirChat.AccountsTest do
     refute Repo.exists?(from t in UserToken, where: t.user_id == ^user.id)
   end
 
+  test "session renewal extends a near-expiry token by 30 days" do
+    user = user_fixture(%{login: "renewal.user"})
+    raw_token = Accounts.generate_session_token(user)
+    now = DateTime.utc_now(:second)
+
+    Repo.update_all(
+      from(token in UserToken, where: token.user_id == ^user.id),
+      set: [expires_at: DateTime.add(now, 28, :day)]
+    )
+
+    assert {^user, true} = Accounts.get_user_by_session_token_and_renew(raw_token)
+
+    session_token = Repo.one!(from token in UserToken, where: token.user_id == ^user.id)
+    assert DateTime.compare(session_token.expires_at, DateTime.add(now, 29, :day)) == :gt
+  end
+
+  test "session renewal waits until at least one day has elapsed" do
+    user = user_fixture(%{login: "fresh.session.user"})
+    raw_token = Accounts.generate_session_token(user)
+    expires_at = DateTime.utc_now(:second) |> DateTime.add(30, :day)
+
+    Repo.update_all(
+      from(token in UserToken, where: token.user_id == ^user.id),
+      set: [expires_at: expires_at]
+    )
+
+    assert {^user, false} = Accounts.get_user_by_session_token_and_renew(raw_token)
+
+    assert Repo.one!(from token in UserToken, where: token.user_id == ^user.id).expires_at ==
+             expires_at
+  end
+
+  test "session renewal never exceeds 180 days from authentication" do
+    user = user_fixture(%{login: "capped.session.user"})
+    raw_token = Accounts.generate_session_token(user)
+    now = DateTime.utc_now(:second)
+    authenticated_at = DateTime.add(now, -170, :day)
+    absolute_expiry = DateTime.add(authenticated_at, 180, :day)
+
+    Repo.update_all(
+      from(token in UserToken, where: token.user_id == ^user.id),
+      set: [authenticated_at: authenticated_at, expires_at: DateTime.add(now, 1, :day)]
+    )
+
+    assert {^user, true} = Accounts.get_user_by_session_token_and_renew(raw_token)
+    session_token = Repo.one!(from token in UserToken, where: token.user_id == ^user.id)
+    assert session_token.expires_at == absolute_expiry
+  end
+
+  test "sessions are invalid after the 180-day absolute lifetime" do
+    user = user_fixture(%{login: "expired.session.user"})
+    raw_token = Accounts.generate_session_token(user)
+    now = DateTime.utc_now(:second)
+
+    Repo.update_all(
+      from(token in UserToken, where: token.user_id == ^user.id),
+      set: [
+        authenticated_at: DateTime.add(now, -181, :day),
+        expires_at: DateTime.add(now, 1, :day)
+      ]
+    )
+
+    assert Accounts.get_user_by_session_token(raw_token) == nil
+    assert Accounts.get_user_by_session_token_and_renew(raw_token) == {nil, false}
+  end
+
   test "disabled users cannot authenticate" do
     user = user_fixture(%{disabled_at: DateTime.utc_now(:second)})
     assert Accounts.get_user_by_login_and_password(user.login, "long-test-password") == nil

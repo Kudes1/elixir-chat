@@ -296,6 +296,15 @@ defmodule ElixirChat.Chat do
     end
   end
 
+  def get_channel_by_public_id(%Scope{} = scope, public_id) do
+    with {:ok, public_id} <- parse_public_id(public_id),
+         %Channel{} = channel <- authorized_group_channel_by_public_id(scope, public_id) do
+      {:ok, channel}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
   def get_direct_conversation(%Scope{user: user}, id) do
     with {:ok, direct_id} <- parse_id(id),
          %DirectConversation{} = direct <-
@@ -303,6 +312,23 @@ defmodule ElixirChat.Chat do
              from direct in DirectConversation,
                where:
                  direct.id == ^direct_id and
+                   (direct.first_user_id == ^user.id or direct.second_user_id == ^user.id),
+               preload: [:channel, :first_user, :second_user]
+           ) do
+      {:ok, direct}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def get_direct_conversation_by_public_id(%Scope{user: user}, public_id) do
+    with {:ok, public_id} <- parse_public_id(public_id),
+         %DirectConversation{} = direct <-
+           Repo.one(
+             from direct in DirectConversation,
+               join: channel in assoc(direct, :channel),
+               where:
+                 channel.public_id == ^public_id and channel.purpose == :direct and
                    (direct.first_user_id == ^user.id or direct.second_user_id == ^user.id),
                preload: [:channel, :first_user, :second_user]
            ) do
@@ -600,6 +626,9 @@ defmodule ElixirChat.Chat do
 
   defp parse_id(_id), do: :error
 
+  defp parse_public_id(public_id) when is_binary(public_id), do: Ecto.UUID.cast(public_id)
+  defp parse_public_id(_public_id), do: :error
+
   defp authorized_group_channel(%Scope{user: user}, channel_id) do
     query =
       from channel in Channel,
@@ -618,6 +647,24 @@ defmodule ElixirChat.Chat do
     Repo.one(query) || legacy_public_channel(channel_id)
   end
 
+  defp authorized_group_channel_by_public_id(%Scope{user: user}, public_id) do
+    query =
+      from channel in Channel,
+        as: :channel,
+        where:
+          channel.public_id == ^public_id and channel.purpose == :group and
+            is_nil(channel.archived_at),
+        where:
+          exists(
+            from membership in ChannelMembership,
+              where:
+                membership.channel_id == parent_as(:channel).id and
+                  membership.user_id == ^user.id
+          )
+
+    Repo.one(query) || legacy_public_channel_by_public_id(public_id)
+  end
+
   # Channels created before memberships existed are backfilled by the migration. This
   # fallback only keeps isolated legacy/test databases usable when a group has no rows.
   defp legacy_public_channel(channel_id) do
@@ -627,6 +674,21 @@ defmodule ElixirChat.Chat do
         where:
           channel.id == ^channel_id and channel.purpose == :group and channel.kind == :public and
             is_nil(channel.archived_at),
+        where:
+          not exists(
+            from membership in ChannelMembership,
+              where: membership.channel_id == parent_as(:legacy_channel).id
+          )
+    )
+  end
+
+  defp legacy_public_channel_by_public_id(public_id) do
+    Repo.one(
+      from channel in Channel,
+        as: :legacy_channel,
+        where:
+          channel.public_id == ^public_id and channel.purpose == :group and
+            channel.kind == :public and is_nil(channel.archived_at),
         where:
           not exists(
             from membership in ChannelMembership,

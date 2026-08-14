@@ -4,7 +4,7 @@ defmodule ElixirChatWeb.PageController do
   def home(conn, _params) do
     if conn.assigns.current_scope do
       case ElixirChat.Chat.get_default_channel() do
-        {:ok, channel} -> redirect(conn, to: ~p"/channels/#{channel.id}")
+        {:ok, channel} -> redirect(conn, to: ~p"/channels/#{channel.public_id}")
         {:error, :not_found} -> redirect(conn, to: ~p"/channels")
       end
     else

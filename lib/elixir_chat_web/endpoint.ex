@@ -1,6 +1,7 @@
 defmodule ElixirChatWeb.Endpoint do
   use Phoenix.Endpoint, otp_app: :elixir_chat
 
+  @session_max_age 60 * 60 * 24 * 30
   @session_options [
     store: :cookie,
     key: "_elixir_chat_key",
@@ -8,7 +9,8 @@ defmodule ElixirChatWeb.Endpoint do
     encryption_salt: "Q04x1zU6dH8A9yVk",
     http_only: true,
     secure: Application.compile_env(:elixir_chat, :env) == :prod,
-    same_site: "Lax"
+    same_site: "Lax",
+    max_age: @session_max_age
   ]
 
   socket "/live", Phoenix.LiveView.Socket,

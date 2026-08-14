@@ -30,6 +30,16 @@ defmodule ElixirChat.ChatTest do
     assert {:error, :not_found} = Chat.get_channel(private.id)
   end
 
+  test "channels receive unique UUIDv4 public identifiers" do
+    first = channel_fixture(%{name: "first-public-id"})
+    second = channel_fixture(%{name: "second-public-id"})
+
+    assert {:ok, first_public_id} = Ecto.UUID.cast(first.public_id)
+    assert first_public_id == first.public_id
+    assert String.at(first.public_id, 14) == "4"
+    refute first.public_id == second.public_id
+  end
+
   test "message input is normalized and authorship cannot be overridden", %{scope: scope} do
     channel = channel_fixture(%{name: "general"})
     other = channel_fixture(%{name: "other"})
@@ -88,6 +98,27 @@ defmodule ElixirChat.ChatTest do
 
     assert Chat.list_direct_conversations(Scope.for_user(outsider)) == []
     assert {:error, :not_found} = Chat.get_direct_conversation(Scope.for_user(outsider), first.id)
+
+    assert {:ok, public_direct} =
+             Chat.get_direct_conversation_by_public_id(scope, first.channel.public_id)
+
+    assert public_direct.id == first.id
+
+    assert {:ok, _public_direct} =
+             Chat.get_direct_conversation_by_public_id(
+               Scope.for_user(other_user),
+               first.channel.public_id
+             )
+
+    assert {:error, :not_found} =
+             Chat.get_direct_conversation_by_public_id(
+               Scope.for_user(outsider),
+               first.channel.public_id
+             )
+
+    assert {:error, :not_found} =
+             Chat.get_direct_conversation_by_public_id(scope, Integer.to_string(first.id))
+
     assert {:error, :not_found} = Chat.get_channel(first.channel.id)
     assert {:ok, {[], false}} = Chat.list_recent_messages(scope, first.channel.id)
 
@@ -159,6 +190,14 @@ defmodule ElixirChat.ChatTest do
 
     assert channel.owner_id == owner.id
     assert {:ok, [_owner_membership]} = Chat.list_channel_memberships(owner_scope, channel)
+    assert {:ok, public_channel} = Chat.get_channel_by_public_id(owner_scope, channel.public_id)
+    assert public_channel.id == channel.id
+    assert {:error, :not_found} = Chat.get_channel_by_public_id(outsider_scope, channel.public_id)
+    assert {:error, :not_found} = Chat.get_channel_by_public_id(owner_scope, "not-a-uuid")
+
+    assert {:error, :not_found} =
+             Chat.get_channel_by_public_id(owner_scope, to_string(channel.id))
+
     assert {:error, :not_found} = Chat.get_channel(outsider_scope, channel.id)
     assert {:error, :not_found} = Chat.list_messages(outsider_scope, channel.id)
     assert {:error, :forbidden} = Chat.create_message(outsider_scope, channel, %{body: "Нет"})

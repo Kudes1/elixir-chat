@@ -23,17 +23,17 @@ defmodule ElixirChatWeb.ChatLiveTest do
     user: user
   } do
     conn = log_in_user(conn, user)
-    {:ok, view, _html} = live(conn, ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(conn, ~p"/channels/#{general.public_id}")
     assert has_element?(view, "#channel-#{general.id}.selected")
 
     view |> element("#channel-#{product.id}") |> render_click()
-    assert_patch(view, ~p"/channels/#{product.id}")
+    assert_patch(view, ~p"/channels/#{product.public_id}")
     assert has_element?(view, "#channel-#{product.id}.selected")
   end
 
   test "sends and receives a persisted message", %{conn: conn, general: general, user: user} do
     conn = log_in_user(conn, user)
-    {:ok, view, _html} = live(conn, ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(conn, ~p"/channels/#{general.public_id}")
 
     view
     |> form("#message-form", message: %{body: "  Новое сообщение  "})
@@ -53,7 +53,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     {:ok, first} = Chat.create_message(Scope.for_user(user), general, %{body: "Первое"})
     {:ok, second} = Chat.create_message(Scope.for_user(other_user), general, %{body: "Второе"})
 
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     assert has_element?(view, "#message-login-#{first.id}", "@#{user.login}")
     assert has_element?(view, "#message-login-#{second.id}", "@other.user")
@@ -68,7 +68,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     {:ok, second} = Chat.create_message(Scope.for_user(user), general, %{body: "Второе"})
     avatar_class = ".avatar-variant-#{rem(user.id, 4)}"
 
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     assert has_element?(view, "#messages-#{first.id} .message-avatar#{avatar_class}", "И")
     assert has_element?(view, "#message-login-#{first.id}", "@#{user.login}")
@@ -89,7 +89,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     {:ok, second} = Chat.create_message(Scope.for_user(other_user), general, %{body: "Ответ"})
     {:ok, third} = Chat.create_message(Scope.for_user(user), general, %{body: "Третье"})
 
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     for message <- [first, second, third] do
       refute has_element?(view, "#messages-#{message.id}.message-continuation")
@@ -103,7 +103,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     user: user
   } do
     {:ok, first} = Chat.create_message(Scope.for_user(user), general, %{body: "Первое"})
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     view
     |> form("#message-form", message: %{body: "Второе"})
@@ -130,7 +130,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
       end
 
     [oldest, boundary | _rest] = messages
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     refute has_element?(view, "#messages-#{oldest.id}")
     refute has_element?(view, "#messages-#{boundary.id}.message-continuation")
@@ -155,7 +155,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
         message
       end
 
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     for _page <- 1..3, do: render_hook(view, "load_older_messages", %{})
 
@@ -183,7 +183,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
         message
       end
 
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
     for _page <- 1..3, do: render_hook(view, "load_older_messages", %{})
 
     other_user = register_user(%{display_name: "Олег", login: "realtime.user"})
@@ -207,7 +207,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     general: general,
     user: user
   } do
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     assert has_element?(view, "#chat-sidebar")
     assert has_element?(view, "#workspace-brand", "Рабочее пространство")
@@ -241,7 +241,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     general: general,
     user: user
   } do
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     assert has_element?(
              view,
@@ -257,7 +257,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     general: general,
     user: user
   } do
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     assert has_element?(view, "section[aria-label='Канал general']")
     assert has_element?(view, ".online-indicator", "в сети")
@@ -271,7 +271,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     user: user
   } do
     {:ok, message} = Chat.create_message(Scope.for_user(user), general, %{body: "Привет"})
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     view |> element("#message-login-#{message.id}") |> render_click()
     expected_mention = "@#{user.login}"
@@ -288,7 +288,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
         body: "Привет @other.user <script>alert('x')</script>"
       })
 
-    {:ok, view, html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     assert has_element?(view, "#messages-#{message.id} .message-mention", "@other.user")
     assert html =~ "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"
@@ -312,7 +312,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
 
     avatar_class = ".avatar-variant-#{:erlang.phash2("архив", 4)}"
 
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     assert has_element?(view, "#messages-#{first.id} .message-avatar#{avatar_class}", "А")
     assert has_element?(view, "#messages-#{second.id}.message-continuation")
@@ -321,14 +321,14 @@ defmodule ElixirChatWeb.ChatLiveTest do
     refute has_element?(view, "#message-login-#{second.id}")
   end
 
-  test "invalid channel recovers to general without crashing", %{
+  test "a numeric channel URL no longer resolves", %{
     conn: conn,
     general: general,
     user: user
   } do
     conn = log_in_user(conn, user)
-    assert {:error, {:live_redirect, redirect}} = live(conn, ~p"/channels/999999")
-    assert redirect.to == ~p"/channels/#{general.id}"
+    assert {:error, {:live_redirect, redirect}} = live(conn, ~p"/channels/#{general.id}")
+    assert redirect.to == ~p"/channels/#{general.public_id}"
     assert redirect.flash["error"] == "Канал не найден. Открыт основной канал."
   end
 
@@ -338,7 +338,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     user: user
   } do
     other_user = register_user(%{display_name: "Олег", login: "oleg.direct"})
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     view |> element("#open-direct-search") |> render_click()
     assert has_element?(view, "#direct-search-panel")
@@ -351,7 +351,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     view |> element("#direct-user-#{other_user.id}") |> render_click()
 
     [direct] = Chat.list_direct_conversations(Scope.for_user(user))
-    assert_patch(view, ~p"/direct/#{direct.id}")
+    assert_patch(view, ~p"/direct/#{direct.channel.public_id}")
     assert has_element?(view, "#direct-conversation-#{direct.id}.selected")
     assert has_element?(view, "section[aria-label='Личный диалог с Олег']")
     assert has_element?(view, "#message-body[placeholder='Написать @oleg.direct']")
@@ -368,10 +368,10 @@ defmodule ElixirChatWeb.ChatLiveTest do
     user: user
   } do
     other_user = register_user(%{display_name: "Мария", login: "maria"})
-    {:ok, sender_view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, sender_view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     {:ok, recipient_view, _html} =
-      live(log_in_user(build_conn(), other_user), ~p"/channels/#{general.id}")
+      live(log_in_user(build_conn(), other_user), ~p"/channels/#{general.public_id}")
 
     sender_view |> element("#open-direct-search") |> render_click()
     sender_view |> element("#direct-user-#{other_user.id}") |> render_click()
@@ -390,10 +390,11 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert {:ok, direct} =
              Chat.get_or_create_direct_conversation(Scope.for_user(user), other_user.id)
 
-    {:ok, sender_view, _html} = live(log_in_user(conn, user), ~p"/direct/#{direct.id}")
+    {:ok, sender_view, _html} =
+      live(log_in_user(conn, user), ~p"/direct/#{direct.channel.public_id}")
 
     {:ok, recipient_view, _html} =
-      live(log_in_user(build_conn(), other_user), ~p"/direct/#{direct.id}")
+      live(log_in_user(build_conn(), other_user), ~p"/direct/#{direct.channel.public_id}")
 
     sender_view
     |> form("#message-form", message: %{body: "Личное сообщение"})
@@ -421,7 +422,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     |> Ecto.Changeset.change(disabled_at: DateTime.utc_now(:second))
     |> Repo.update!()
 
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/direct/#{direct.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/direct/#{direct.channel.public_id}")
     assert has_element?(view, "#messages article p", "Старая история")
     assert has_element?(view, "#direct-recipient-disabled", "только для чтения")
     refute has_element?(view, "#message-form")
@@ -439,9 +440,26 @@ defmodule ElixirChatWeb.ChatLiveTest do
              Chat.get_or_create_direct_conversation(Scope.for_user(user), other_user.id)
 
     assert {:error, {:live_redirect, redirect}} =
-             live(log_in_user(conn, outsider), ~p"/direct/#{direct.id}")
+             live(log_in_user(conn, outsider), ~p"/direct/#{direct.channel.public_id}")
 
-    assert redirect.to == ~p"/channels/#{general.id}"
+    assert redirect.to == ~p"/channels/#{general.public_id}"
+    assert redirect.flash["error"] =~ "не найден или недоступен"
+  end
+
+  test "a numeric direct conversation URL no longer resolves", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    other_user = register_user(%{display_name: "Олег", login: "numeric.direct"})
+
+    assert {:ok, direct} =
+             Chat.get_or_create_direct_conversation(Scope.for_user(user), other_user.id)
+
+    assert {:error, {:live_redirect, redirect}} =
+             live(log_in_user(conn, user), ~p"/direct/#{direct.id}")
+
+    assert redirect.to == ~p"/channels/#{general.public_id}"
     assert redirect.flash["error"] =~ "не найден или недоступен"
   end
 
@@ -469,18 +487,18 @@ defmodule ElixirChatWeb.ChatLiveTest do
     {:ok, first} = Chat.get_or_create_direct_conversation(Scope.for_user(user), first_user.id)
     {:ok, second} = Chat.get_or_create_direct_conversation(Scope.for_user(user), second_user.id)
 
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
     assert direct_ids(view) == [second.id, first.id]
 
     view |> element("#direct-conversation-#{first.id}") |> render_click()
-    assert_patch(view, ~p"/direct/#{first.id}")
+    assert_patch(view, ~p"/direct/#{first.channel.public_id}")
 
     assert direct_ids(view) == [second.id, first.id]
     assert has_element?(view, "#direct-conversation-#{first.id}.selected")
     assert selected_direct_count(view) == 1
 
     view |> element("#direct-conversation-#{second.id}") |> render_click()
-    assert_patch(view, ~p"/direct/#{second.id}")
+    assert_patch(view, ~p"/direct/#{second.channel.public_id}")
 
     assert direct_ids(view) == [second.id, first.id]
     assert has_element?(view, "#direct-conversation-#{second.id}.selected")
@@ -502,8 +520,8 @@ defmodule ElixirChatWeb.ChatLiveTest do
   } do
     conn = log_in_user(conn, user)
 
-    {:ok, first, _html} = live(conn, ~p"/channels/#{general.id}")
-    {:ok, second, _html} = live(conn, ~p"/channels/#{general.id}")
+    {:ok, first, _html} = live(conn, ~p"/channels/#{general.public_id}")
+    {:ok, second, _html} = live(conn, ~p"/channels/#{general.public_id}")
     :sys.get_state(ElixirChatWeb.Presence)
 
     assert %{metas: metas} =
@@ -520,7 +538,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     general: general,
     user: user
   } do
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     view |> element("#open-channel-catalog") |> render_click()
     assert has_element?(view, "#channel-catalog[role='dialog']")
@@ -532,7 +550,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     |> render_submit()
 
     [channel] = Enum.filter(Chat.list_channels(Scope.for_user(user)), &(&1.name == "design-team"))
-    assert_patch(view, ~p"/channels/#{channel.id}")
+    assert_patch(view, ~p"/channels/#{channel.public_id}")
     assert channel.owner_id == user.id
     assert channel.kind == :private
     assert has_element?(view, "#channel-#{channel.id}.selected")
@@ -549,14 +567,14 @@ defmodule ElixirChatWeb.ChatLiveTest do
                kind: :public
              })
 
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
     refute has_element?(view, "#channel-#{channel.id}")
 
     view |> element("#open-channel-catalog") |> render_click()
     assert has_element?(view, "#available-channel-#{channel.id}", "Объявления")
     view |> element("#join-channel-#{channel.id}") |> render_click()
 
-    assert_patch(view, ~p"/channels/#{channel.id}")
+    assert_patch(view, ~p"/channels/#{channel.public_id}")
     assert has_element?(view, "#channel-#{channel.id}.selected")
     refute has_element?(view, "#channel-catalog")
     refute has_element?(view, "#leave-channel")
@@ -574,7 +592,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     refute has_element?(view, "#archive-channel")
 
     view |> element("#leave-channel") |> render_click()
-    assert_patch(view, ~p"/channels/#{general.id}")
+    assert_patch(view, ~p"/channels/#{general.public_id}")
   end
 
   test "private invitation and owner removal update two live sessions", %{
@@ -587,10 +605,10 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert {:ok, channel} =
              Chat.create_channel(Scope.for_user(owner), %{name: "leadership", kind: :private})
 
-    {:ok, owner_view, _html} = live(log_in_user(conn, owner), ~p"/channels/#{channel.id}")
+    {:ok, owner_view, _html} = live(log_in_user(conn, owner), ~p"/channels/#{channel.public_id}")
 
     {:ok, member_view, _html} =
-      live(log_in_user(build_conn(), member), ~p"/channels/#{general.id}")
+      live(log_in_user(build_conn(), member), ~p"/channels/#{general.public_id}")
 
     owner_view |> element("#open-channel-settings") |> render_click()
 
@@ -603,11 +621,11 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert has_element?(member_view, "#channel-#{channel.id}", "leadership")
 
     member_view |> element("#channel-#{channel.id}") |> render_click()
-    assert_patch(member_view, ~p"/channels/#{channel.id}")
+    assert_patch(member_view, ~p"/channels/#{channel.public_id}")
 
     owner_view |> element("#remove-member-#{member.id}") |> render_click()
     render(member_view)
-    assert_patch(member_view, ~p"/channels/#{general.id}")
+    assert_patch(member_view, ~p"/channels/#{general.public_id}")
     refute has_element?(member_view, "#channel-#{channel.id}")
   end
 
@@ -623,7 +641,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
              Chat.create_channel(Scope.for_user(owner), %{name: "old-name", kind: :private})
 
     assert {:ok, _} = Chat.invite_member(Scope.for_user(owner), channel, member)
-    {:ok, view, _html} = live(log_in_user(conn, owner), ~p"/channels/#{channel.id}")
+    {:ok, view, _html} = live(log_in_user(conn, owner), ~p"/channels/#{channel.public_id}")
     view |> element("#open-channel-settings") |> render_click()
 
     view
@@ -639,7 +657,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert transferred.owner_id == member.id
 
     view |> element("#leave-channel") |> render_click()
-    assert_patch(view, ~p"/channels/#{general.id}")
+    assert_patch(view, ~p"/channels/#{general.public_id}")
   end
 
   test "archiving redirects every active member and preserves the channel row", %{
@@ -653,16 +671,16 @@ defmodule ElixirChatWeb.ChatLiveTest do
              Chat.create_channel(Scope.for_user(owner), %{name: "temporary", kind: :private})
 
     assert {:ok, _} = Chat.invite_member(Scope.for_user(owner), channel, member)
-    {:ok, owner_view, _html} = live(log_in_user(conn, owner), ~p"/channels/#{channel.id}")
+    {:ok, owner_view, _html} = live(log_in_user(conn, owner), ~p"/channels/#{channel.public_id}")
 
     {:ok, member_view, _html} =
-      live(log_in_user(build_conn(), member), ~p"/channels/#{channel.id}")
+      live(log_in_user(build_conn(), member), ~p"/channels/#{channel.public_id}")
 
     owner_view |> element("#open-channel-settings") |> render_click()
     owner_view |> element("#archive-channel") |> render_click()
-    assert_patch(owner_view, ~p"/channels/#{general.id}")
+    assert_patch(owner_view, ~p"/channels/#{general.public_id}")
     render(member_view)
-    assert_patch(member_view, ~p"/channels/#{general.id}")
+    assert_patch(member_view, ~p"/channels/#{general.public_id}")
     assert Repo.get!(Channel, channel.id).archived_at
   end
 
