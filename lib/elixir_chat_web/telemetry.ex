@@ -52,6 +52,15 @@ defmodule ElixirChatWeb.Telemetry do
         unit: {:native, :millisecond}
       ),
 
+      # LiveView lifecycle metrics
+      summary("phoenix.live_view.mount.stop.duration", unit: {:native, :millisecond}),
+      summary("phoenix.live_view.handle_params.stop.duration", unit: {:native, :millisecond}),
+      summary("phoenix.live_view.handle_event.stop.duration",
+        tags: [:event],
+        unit: {:native, :millisecond}
+      ),
+      summary("phoenix.live_view.render.stop.duration", unit: {:native, :millisecond}),
+
       # Database Metrics
       summary("elixir_chat.repo.query.total_time",
         unit: {:native, :millisecond},

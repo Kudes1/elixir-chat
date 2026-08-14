@@ -92,6 +92,7 @@ defmodule ElixirChat.MixProject do
       "assets.deploy": [
         "tailwind elixir_chat --minify",
         "esbuild elixir_chat --minify",
+        "assets.check_budget",
         "phx.digest"
       ],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]

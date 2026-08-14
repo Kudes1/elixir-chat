@@ -95,19 +95,33 @@ const MessageComposer = {
 const MessageList = {
   mounted() {
     this.loadingOlderMessages = false
+    this.loadingNewerMessages = false
     this.previousScrollHeight = null
     this.scrollToLatest = behavior => {
       this.el.scrollTo({top: this.el.scrollHeight, behavior})
     }
     this.loadOlderMessages = () => {
-      if (this.loadingOlderMessages || this.el.scrollTop > 80) return
+      if (this.el.dataset.hasOlder !== "true" || this.loadingOlderMessages || this.el.scrollTop > 80) return
 
       this.loadingOlderMessages = true
       this.previousScrollHeight = this.el.scrollHeight
       this.pushEvent("load_older_messages", {})
     }
 
-    this.el.addEventListener("scroll", this.loadOlderMessages)
+    this.loadNewerMessages = () => {
+      const distanceFromBottom = this.el.scrollHeight - this.el.clientHeight - this.el.scrollTop
+      if (this.el.dataset.hasNewer !== "true" || this.loadingNewerMessages || distanceFromBottom > 80) return
+
+      this.loadingNewerMessages = true
+      this.pushEvent("load_newer_messages", {})
+    }
+
+    this.handleScroll = () => {
+      this.loadOlderMessages()
+      this.loadNewerMessages()
+    }
+
+    this.el.addEventListener("scroll", this.handleScroll)
     this.handleEvent("message_sent", () => {
       this.scrollToLatest("smooth")
     })
@@ -122,17 +136,101 @@ const MessageList = {
       this.previousScrollHeight = null
       this.loadingOlderMessages = false
     })
+    this.handleEvent("newer_messages_loaded", () => {
+      this.loadingNewerMessages = false
+    })
     requestAnimationFrame(() => this.scrollToLatest("auto"))
   },
+  updated() {
+    this.loadingOlderMessages = false
+    this.loadingNewerMessages = false
+  },
   destroyed() {
-    this.el.removeEventListener("scroll", this.loadOlderMessages)
+    this.el.removeEventListener("scroll", this.handleScroll)
+  },
+}
+
+const SidebarSections = {
+  mounted() {
+    this.storageKey = "orbit:sidebar-sections:v1"
+    this.sectionState = {channels: true, directs: true}
+
+    this.readState = value => {
+      try {
+        const stored = JSON.parse(value ?? localStorage.getItem(this.storageKey) ?? "{}")
+        this.sectionState = {
+          channels: stored.channels !== false,
+          directs: stored.directs !== false,
+        }
+      } catch (_error) {
+        this.sectionState = {channels: true, directs: true}
+      }
+    }
+
+    this.applyState = () => {
+      for (const [section, expanded] of Object.entries(this.sectionState)) {
+        const toggle = this.el.querySelector(`[data-sidebar-toggle="${section}"]`)
+        const content = this.el.querySelector(`[data-sidebar-content="${section}"]`)
+
+        if (toggle) toggle.setAttribute("aria-expanded", String(expanded))
+        if (content) content.hidden = !expanded
+      }
+
+      this.el.classList.remove("sidebar-sections-pending")
+    }
+
+    this.saveState = () => {
+      try {
+        localStorage.setItem(this.storageKey, JSON.stringify(this.sectionState))
+      } catch (_error) {
+        // The sidebar still works when storage is unavailable.
+      }
+    }
+
+    this.handleClick = event => {
+      const toggle = event.target.closest("[data-sidebar-toggle]")
+
+      if (toggle && this.el.contains(toggle)) {
+        const section = toggle.dataset.sidebarToggle
+        this.sectionState[section] = !this.sectionState[section]
+        this.applyState()
+        this.saveState()
+        return
+      }
+
+      const openDirectSearch = event.target.closest("[data-open-direct-search]")
+
+      if (openDirectSearch && this.el.contains(openDirectSearch)) {
+        this.sectionState.directs = true
+        this.applyState()
+        this.saveState()
+      }
+    }
+
+    this.handleStorage = event => {
+      if (event.key !== this.storageKey) return
+      this.readState(event.newValue)
+      this.applyState()
+    }
+
+    this.readState()
+    this.applyState()
+    this.el.addEventListener("click", this.handleClick)
+    window.addEventListener("storage", this.handleStorage)
+  },
+  updated() {
+    this.applyState()
+  },
+  destroyed() {
+    this.el.removeEventListener("click", this.handleClick)
+    window.removeEventListener("storage", this.handleStorage)
   },
 }
 
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, MessageComposer, MessageList},
+  hooks: {...colocatedHooks, MessageComposer, MessageList, SidebarSections},
 })
 
 // Show progress bar on live navigation and form submits

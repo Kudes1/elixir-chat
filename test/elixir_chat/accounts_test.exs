@@ -3,6 +3,7 @@ defmodule ElixirChat.AccountsTest do
 
   alias ElixirChat.Accounts
   alias ElixirChat.Accounts.{Scope, User, UserToken}
+  alias ElixirChat.Chat.{Channel, ChannelMembership}
   alias ElixirChat.Repo
 
   test "registration invitations are one-time and keep the administrator-selected identity" do
@@ -52,6 +53,63 @@ defmodule ElixirChat.AccountsTest do
   test "disabled users cannot authenticate" do
     user = user_fixture(%{disabled_at: DateTime.utc_now(:second)})
     assert Accounts.get_user_by_login_and_password(user.login, "long-test-password") == nil
+  end
+
+  test "messageable user search excludes self and disabled accounts" do
+    current_user = user_fixture(%{login: "current.user", display_name: "Текущий"})
+    match = user_fixture(%{login: "search.match", display_name: "Искомый пользователь"})
+
+    _disabled =
+      user_fixture(%{
+        login: "disabled.match",
+        display_name: "Искомый отключённый",
+        disabled_at: DateTime.utc_now(:second)
+      })
+
+    scope = Scope.for_user(current_user)
+
+    assert Accounts.search_messageable_users(scope, "ИСКОМЫЙ") == [match]
+    assert current_user not in Accounts.search_messageable_users(scope, "")
+  end
+
+  test "invitation registration adds the new user to general" do
+    admin = user_fixture(%{login: "general.admin", role: :admin})
+
+    general =
+      %Channel{owner_id: admin.id, is_general: true}
+      |> Channel.changeset(%{name: "general", kind: :public, purpose: :group})
+      |> Repo.insert!()
+
+    assert {:ok, _, token} =
+             Accounts.create_registration_invitation(Scope.for_user(admin), %{
+               login: "general.member",
+               display_name: "Новый участник"
+             })
+
+    assert {:ok, user} = Accounts.accept_invitation(token, "another-long-password")
+
+    assert Repo.exists?(
+             from membership in ChannelMembership,
+               where: membership.channel_id == ^general.id and membership.user_id == ^user.id
+           )
+  end
+
+  test "the first server admin claims unowned seed group channels" do
+    channel =
+      %Channel{}
+      |> Channel.changeset(%{name: "product", kind: :public, purpose: :group})
+      |> Repo.insert!()
+
+    assert {:ok, {_invitation, token}} =
+             Accounts.bootstrap_invitation("first.admin", "Первый администратор")
+
+    assert {:ok, admin} = Accounts.accept_invitation(token, "another-long-password")
+    assert Repo.get!(Channel, channel.id).owner_id == admin.id
+
+    assert Repo.exists?(
+             from membership in ChannelMembership,
+               where: membership.channel_id == ^channel.id and membership.user_id == ^admin.id
+           )
   end
 
   defp user_fixture(attrs) do

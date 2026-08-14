@@ -1,128 +1,99 @@
 <Layouts.app flash={@flash} current_scope={@current_scope}>
   <main id="chat-shell" class="chat-shell">
-    <aside id="chat-sidebar" class="chat-sidebar">
-      <header id="workspace-brand" class="sidebar-brand">
-        <p class="sidebar-eyebrow">Рабочее пространство</p>
-        <h1>Orbit</h1>
-      </header>
+    <.sidebar
+      channels={@channels}
+      channel={@channel}
+      direct_conversation_id={@direct_conversation && @direct_conversation.id}
+      direct_conversations={@direct_conversations}
+      direct_search_open?={@direct_search_open?}
+      direct_search_form={@direct_search_form}
+      direct_search_results={@direct_search_results}
+      channel_catalog_open?={@channel_catalog_open?}
+      current_user={@current_scope.user}
+      visitor_name={@visitor_name}
+    />
+    <button
+      id="sidebar-overlay"
+      type="button"
+      class="sidebar-overlay"
+      aria-label="Закрыть навигацию"
+      phx-click={close_sidebar()}
+      style="display: none"
+    ></button>
 
-      <nav id="channel-navigation" class="channel-navigation" aria-label="Каналы">
-        <h2 class="sidebar-section-title">Каналы</h2>
-        <div class="channel-list">
-          <.link
-            :for={channel <- @channels}
-            id={"channel-#{channel.id}"}
-            class={["channel-link", @channel && channel.id == @channel.id && "selected"]}
-            patch={~p"/channels/#{channel.id}"}
-          >
-            <span aria-hidden="true">#</span>
-            <span class="channel-name">{channel.name}</span>
-          </.link>
-        </div>
-      </nav>
+    <section
+      :if={@channel}
+      class="conversation"
+      aria-label={
+        if @current_other_user,
+          do: "Личный диалог с #{@current_other_user.display_name}",
+          else: "Канал #{@channel.name}"
+      }
+    >
+      <.conversation_header
+        channel={@channel}
+        other_user={@current_other_user}
+        online_count={@online_count}
+        current_user={@current_scope.user}
+      />
 
-      <footer id="current-user" class="sidebar-profile">
-        <.user_avatar
-          name={@visitor_name}
-          user_id={@current_scope.user.id}
-          class="profile-avatar"
-        />
-        <div class="profile-details">
-          <strong>{@visitor_name}</strong>
-          <small id="current-user-login" class="current-user-login">
-            @{@current_scope.user.login}
-          </small>
-        </div>
-        <.link
-          href={~p"/logout"}
-          method="delete"
-          id="logout-link"
-          class="logout-link"
-          aria-label="Выйти из Orbit"
+      <div class="message-window">
+        <div
+          id="messages"
+          class="message-list"
+          phx-update="stream"
+          phx-hook="MessageList"
+          data-has-older={to_string(@has_older_messages?)}
+          data-has-newer={to_string(@has_newer_messages?)}
+          role="log"
+          aria-live="polite"
         >
-          Выйти
-        </.link>
-      </footer>
-    </aside>
-
-    <section :if={@channel} class="conversation" aria-label={"Канал #{@channel.name}"}>
-      <header class="conversation-header">
-        <div class="channel-heading">
-          <h2 class="channel-title"><span aria-hidden="true">#</span> {@channel.name}</h2>
-          <p>
-            {@channel.description || "Командный разговор"}
-          </p>
+          <.message :for={{_dom_id, item} <- @streams.messages} item={item} />
         </div>
-        <span class="online-indicator"><i></i>{@online_count} в сети</span>
-      </header>
-
-      <div
-        id="messages"
-        class="message-list"
-        phx-update="stream"
-        phx-hook="MessageList"
-        role="log"
-        aria-live="polite"
-      >
-        <article
-          :for={{dom_id, item} <- @streams.messages}
-          id={dom_id}
-          class={["message", item.continuation? && "message-continuation"]}
+        <button
+          :if={@pending_new_messages?}
+          id="jump-to-latest"
+          type="button"
+          class="jump-to-latest"
+          phx-click="jump_to_latest"
         >
-          <.user_avatar
-            :if={!item.continuation?}
-            name={item.message.author_name}
-            user_id={item.message.user_id}
-            class="message-avatar"
-          />
-          <time :if={item.continuation?} class="message-continuation-time">
-            {relative_time(item.message.inserted_at)}
-          </time>
-          <div class="message-content">
-            <div :if={!item.continuation?} class="message-meta">
-              <strong>{item.message.author_name}</strong>
-              <button
-                :if={item.message.user}
-                id={"message-login-#{item.message.id}"}
-                type="button"
-                class="message-author-login"
-                phx-click="insert_mention"
-                phx-value-login={item.message.user.login}
-                aria-label={"Упомянуть @#{item.message.user.login}"}
-              >
-                @{item.message.user.login}
-              </button>
-              <span class="message-meta-separator">·</span>
-              <time>{relative_time(item.message.inserted_at)}</time>
-            </div>
-            <.message_body body={item.message.body} />
-          </div>
-        </article>
+          Новые сообщения <.icon name="hero-arrow-down" class="size-4" />
+        </button>
       </div>
 
-      <.form for={@message_form} id="message-form" phx-submit="send_message" class="composer">
-        <.input
-          field={@message_form[:body]}
-          id="message-body"
-          type="textarea"
-          class="chat-composer-input"
-          rows="1"
-          autocomplete="off"
-          placeholder={"Написать в ##{@channel.name}"}
-          aria-label="Сообщение"
-          phx-hook="MessageComposer"
-        />
-        <button id="send-message" type="submit" aria-label="Отправить сообщение">
-          <.icon name="hero-arrow-up" class="size-4" />
-        </button>
-      </.form>
+      <.composer form={@message_form} channel={@channel} other_user={@current_other_user} />
     </section>
 
     <section :if={is_nil(@channel)} id="empty-chat" class="conversation empty-chat">
+      <button
+        id="sidebar-toggle"
+        type="button"
+        class="mobile-sidebar-toggle empty-sidebar-toggle"
+        aria-label="Открыть навигацию"
+        aria-controls="chat-sidebar"
+        aria-expanded="false"
+        phx-click={open_sidebar()}
+      >
+        <.icon name="hero-bars-3" class="size-5" />
+      </button>
       <div>
-        <h2>Пока нет доступных каналов</h2>
-        <p>Добавьте публичный канал или запустите начальное заполнение базы.</p>
+        <h2>Выберите разговор</h2><p>Откройте канал или начните личный диалог в меню слева.</p>
       </div>
     </section>
+
+    <.channel_catalog
+      :if={@channel_catalog_open?}
+      form={@channel_form}
+      channels={@available_channels}
+    />
+    <.channel_settings
+      :if={@channel_settings_open? && @channel && is_nil(@direct_conversation)}
+      channel={@channel}
+      current_user={@current_scope.user}
+      form={@channel_form}
+      memberships={@channel_memberships}
+      invite_form={@invite_search_form}
+      invite_results={@invite_search_results}
+    />
   </main>
 </Layouts.app>

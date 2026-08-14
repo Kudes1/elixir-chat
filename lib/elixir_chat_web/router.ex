@@ -27,6 +27,7 @@ defmodule ElixirChatWeb.Router do
     live_session :authenticated, on_mount: [{ElixirChatWeb.UserAuth, :ensure_authenticated}] do
       live "/channels", ChatLive, :index
       live "/channels/:id", ChatLive, :show
+      live "/direct/:id", ChatLive, :direct
     end
   end
 

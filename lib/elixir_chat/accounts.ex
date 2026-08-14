@@ -3,6 +3,7 @@ defmodule ElixirChat.Accounts do
   alias Ecto.Multi
   alias ElixirChat.Repo
   alias ElixirChat.Accounts.{AuditEvent, Invitation, Scope, User, UserToken}
+  alias ElixirChat.Chat.{Channel, ChannelMembership}
 
   @session_days 30
 
@@ -186,6 +187,9 @@ defmodule ElixirChat.Accounts do
                    )
                  ) do
               {:ok, user} ->
+                add_to_general(user)
+                if user.role == :admin, do: claim_unowned_group_channels(user)
+
                 Repo.update_all(from(i in Invitation, where: i.id == ^invitation.id),
                   set: [used_at: now]
                 )
@@ -234,6 +238,22 @@ defmodule ElixirChat.Accounts do
     do: Repo.all(from u in User, order_by: [asc: u.login])
 
   def list_users(_), do: []
+
+  def search_messageable_users(scope, query, limit \\ 20)
+
+  def search_messageable_users(%Scope{user: current_user}, query, limit)
+      when is_binary(query) and is_integer(limit) and limit > 0 do
+    pattern = "%#{String.trim(query)}%"
+
+    User
+    |> where([user], user.id != ^current_user.id and is_nil(user.disabled_at))
+    |> where([user], ilike(user.display_name, ^pattern) or ilike(user.login, ^pattern))
+    |> order_by([user], asc: user.display_name, asc: user.login)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  def search_messageable_users(_, _, _), do: []
 
   def update_user(%Scope{user: %{role: :admin} = actor}, %User{role: :user} = user, attrs) do
     Multi.new()
@@ -303,6 +323,50 @@ defmodule ElixirChat.Accounts do
       {:ok, %{invitation: i}} -> {:ok, i, encode(token)}
       {:error, _, r, _} -> {:error, r}
     end
+  end
+
+  defp add_to_general(user) do
+    case Repo.one(
+           from channel in Channel,
+             where:
+               channel.purpose == :group and channel.is_general and
+                 is_nil(channel.archived_at),
+             lock: "FOR SHARE",
+             limit: 1
+         ) do
+      nil ->
+        :ok
+
+      channel ->
+        Repo.insert!(
+          ChannelMembership.changeset(%ChannelMembership{}, %{
+            channel_id: channel.id,
+            user_id: user.id
+          })
+        )
+    end
+  end
+
+  defp claim_unowned_group_channels(user) do
+    channels =
+      Repo.all(
+        from channel in Channel,
+          where: channel.purpose == :group and is_nil(channel.owner_id),
+          lock: "FOR UPDATE"
+      )
+
+    Enum.each(channels, fn channel ->
+      Repo.update!(Ecto.Changeset.change(channel, owner_id: user.id))
+
+      Repo.insert(
+        ChannelMembership.changeset(%ChannelMembership{}, %{
+          channel_id: channel.id,
+          user_id: user.id
+        }),
+        on_conflict: :nothing,
+        conflict_target: [:channel_id, :user_id]
+      )
+    end)
   end
 
   defp audit(actor, action, type, id, metadata),
