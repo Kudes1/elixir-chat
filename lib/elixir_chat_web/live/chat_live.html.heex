@@ -1,50 +1,59 @@
 <Layouts.app flash={@flash} current_scope={@current_scope}>
-  <main class="chat-shell">
-    <aside class="workspace-sidebar">
-      <div class="workspace-mark">O</div>
-    </aside>
+  <main id="chat-shell" class="chat-shell">
+    <aside id="chat-sidebar" class="chat-sidebar">
+      <header id="workspace-brand" class="sidebar-brand">
+        <p class="sidebar-eyebrow">Рабочее пространство</p>
+        <h1>Orbit</h1>
+      </header>
 
-    <aside class="channel-sidebar">
-      <div class="workspace-header">
-        <div>
-          <p class="eyebrow">WORKSPACE</p><h1>Orbit</h1>
+      <nav id="channel-navigation" class="channel-navigation" aria-label="Каналы">
+        <h2 class="sidebar-section-title">Каналы</h2>
+        <div class="channel-list">
+          <.link
+            :for={channel <- @channels}
+            id={"channel-#{channel.id}"}
+            class={["channel-link", @channel && channel.id == @channel.id && "selected"]}
+            patch={~p"/channels/#{channel.id}"}
+          >
+            <span aria-hidden="true">#</span>
+            <span class="channel-name">{channel.name}</span>
+          </.link>
         </div>
-      </div>
-
-      <nav class="channel-list" aria-label="Channels">
-        <div class="sidebar-label"><span>CHANNELS</span></div>
-        <.link
-          :for={channel <- @channels}
-          id={"channel-#{channel.id}"}
-          class={["channel-link", @channel && channel.id == @channel.id && "selected"]}
-          patch={~p"/channels/#{channel.id}"}
-        >
-          <span>#</span>{channel.name}
-        </.link>
       </nav>
 
-      <div class="current-user">
-        <div class="avatar avatar-violet">{initials(@visitor_name)}</div>
-        <div>
+      <footer id="current-user" class="sidebar-profile">
+        <.user_avatar
+          name={@visitor_name}
+          user_id={@current_scope.user.id}
+          class="profile-avatar"
+        />
+        <div class="profile-details">
           <strong>{@visitor_name}</strong>
           <small id="current-user-login" class="current-user-login">
             @{@current_scope.user.login}
           </small>
         </div>
-        <.link href={~p"/logout"} method="delete" id="logout-link" class="text-xs">Выйти</.link>
-      </div>
+        <.link
+          href={~p"/logout"}
+          method="delete"
+          id="logout-link"
+          class="logout-link"
+          aria-label="Выйти из Orbit"
+        >
+          Выйти
+        </.link>
+      </footer>
     </aside>
 
-    <section :if={@channel} class="conversation" aria-label={"Channel #{@channel.name}"}>
+    <section :if={@channel} class="conversation" aria-label={"Канал #{@channel.name}"}>
       <header class="conversation-header">
-        <div>
-          <div class="channel-title"># {@channel.name}</div><p>
+        <div class="channel-heading">
+          <h2 class="channel-title"><span aria-hidden="true">#</span> {@channel.name}</h2>
+          <p>
             {@channel.description || "Командный разговор"}
           </p>
         </div>
-        <div class="header-actions">
-          <span class="online-indicator"><i></i>{@online_count} online</span>
-        </div>
+        <span class="online-indicator"><i></i>{@online_count} в сети</span>
       </header>
 
       <div
@@ -55,28 +64,38 @@
         role="log"
         aria-live="polite"
       >
-        <article :for={{dom_id, message} <- @streams.messages} id={dom_id} class="message">
-          <div class={["avatar", "avatar-#{rem(message.id, 4)}"]}>
-            {initials(message.author_name)}
-          </div>
+        <article
+          :for={{dom_id, item} <- @streams.messages}
+          id={dom_id}
+          class={["message", item.continuation? && "message-continuation"]}
+        >
+          <.user_avatar
+            :if={!item.continuation?}
+            name={item.message.author_name}
+            user_id={item.message.user_id}
+            class="message-avatar"
+          />
+          <time :if={item.continuation?} class="message-continuation-time">
+            {relative_time(item.message.inserted_at)}
+          </time>
           <div class="message-content">
-            <div class="message-meta">
-              <strong>{message.author_name}</strong>
+            <div :if={!item.continuation?} class="message-meta">
+              <strong>{item.message.author_name}</strong>
               <button
-                :if={message.user}
-                id={"message-login-#{message.id}"}
+                :if={item.message.user}
+                id={"message-login-#{item.message.id}"}
                 type="button"
                 class="message-author-login"
                 phx-click="insert_mention"
-                phx-value-login={message.user.login}
-                aria-label={"Упомянуть @#{message.user.login}"}
+                phx-value-login={item.message.user.login}
+                aria-label={"Упомянуть @#{item.message.user.login}"}
               >
-                @{message.user.login}
+                @{item.message.user.login}
               </button>
               <span class="message-meta-separator">·</span>
-              <time>{relative_time(message.inserted_at)}</time>
+              <time>{relative_time(item.message.inserted_at)}</time>
             </div>
-            <.message_body body={message.body} />
+            <.message_body body={item.message.body} />
           </div>
         </article>
       </div>
@@ -90,10 +109,12 @@
           rows="1"
           autocomplete="off"
           placeholder={"Написать в ##{@channel.name}"}
-          aria-label="Message"
+          aria-label="Сообщение"
           phx-hook="MessageComposer"
         />
-        <button id="send-message" type="submit" aria-label="Send message">↑</button>
+        <button id="send-message" type="submit" aria-label="Отправить сообщение">
+          <.icon name="hero-arrow-up" class="size-4" />
+        </button>
       </.form>
     </section>
 

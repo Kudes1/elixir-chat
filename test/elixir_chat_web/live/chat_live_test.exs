@@ -59,14 +59,117 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert has_element?(view, "#message-login-#{second.id}", "@other.user")
   end
 
-  test "shows the current user's login in the sidebar", %{
+  test "groups consecutive messages from one user under one author header", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, first} = Chat.create_message(Scope.for_user(user), general, %{body: "Первое"})
+    {:ok, second} = Chat.create_message(Scope.for_user(user), general, %{body: "Второе"})
+    avatar_class = ".avatar-variant-#{rem(user.id, 4)}"
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+
+    assert has_element?(view, "#messages-#{first.id} .message-avatar#{avatar_class}", "И")
+    assert has_element?(view, "#message-login-#{first.id}", "@#{user.login}")
+    assert has_element?(view, "#messages-#{second.id}.message-continuation")
+    assert has_element?(view, "#messages-#{second.id} .message-continuation-time")
+    refute has_element?(view, "#messages-#{second.id} .message-avatar")
+    refute has_element?(view, "#message-login-#{second.id}")
+    assert has_element?(view, "#current-user .profile-avatar#{avatar_class}", "И")
+  end
+
+  test "starts a new author header after another user writes", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    other_user = register_user(%{display_name: "Олег", login: "oleg"})
+    {:ok, first} = Chat.create_message(Scope.for_user(user), general, %{body: "Первое"})
+    {:ok, second} = Chat.create_message(Scope.for_user(other_user), general, %{body: "Ответ"})
+    {:ok, third} = Chat.create_message(Scope.for_user(user), general, %{body: "Третье"})
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+
+    for message <- [first, second, third] do
+      refute has_element?(view, "#messages-#{message.id}.message-continuation")
+      assert has_element?(view, "#messages-#{message.id} .message-avatar")
+    end
+  end
+
+  test "groups a new consecutive message without duplicating its stream item", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, first} = Chat.create_message(Scope.for_user(user), general, %{body: "Первое"})
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+
+    view
+    |> form("#message-form", message: %{body: "Второе"})
+    |> render_submit()
+
+    [persisted_first, second] = Chat.list_messages(general.id)
+    assert persisted_first.id == first.id
+    assert has_element?(view, "#messages-#{second.id}.message-continuation")
+    assert has_element?(view, "#messages-#{second.id} .message-continuation-time")
+    refute has_element?(view, "#messages-#{second.id} .message-avatar")
+  end
+
+  test "keeps a group intact across the older-messages page boundary", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    messages =
+      for number <- 1..51 do
+        {:ok, message} =
+          Chat.create_message(Scope.for_user(user), general, %{body: "Сообщение #{number}"})
+
+        message
+      end
+
+    [oldest, boundary | _rest] = messages
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+
+    refute has_element?(view, "#messages-#{oldest.id}")
+    refute has_element?(view, "#messages-#{boundary.id}.message-continuation")
+
+    render_hook(view, "load_older_messages", %{})
+
+    assert has_element?(view, "#messages-#{oldest.id} .message-avatar")
+    assert has_element?(view, "#messages-#{boundary.id}.message-continuation")
+    refute has_element?(view, "#messages-#{boundary.id} .message-avatar")
+  end
+
+  test "renders the redesigned localized sidebar and current user profile", %{
     conn: conn,
     general: general,
     user: user
   } do
     {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
 
+    assert has_element?(view, "#chat-sidebar")
+    assert has_element?(view, "#workspace-brand", "Рабочее пространство")
+    assert has_element?(view, "#workspace-brand", "Orbit")
+    assert has_element?(view, "#channel-navigation[aria-label='Каналы']", "Каналы")
+    assert has_element?(view, "#current-user .profile-avatar", "И")
     assert has_element?(view, "#current-user-login", "@#{user.login}")
+    refute has_element?(view, ".workspace-sidebar")
+    refute has_element?(view, ".workspace-mark")
+  end
+
+  test "uses Russian labels for conversation controls", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
+
+    assert has_element?(view, "section[aria-label='Канал general']")
+    assert has_element?(view, ".online-indicator", "в сети")
+    assert has_element?(view, "#message-body[aria-label='Сообщение']")
+    assert has_element?(view, "#send-message[aria-label='Отправить сообщение']")
   end
 
   test "clicking an author login pushes the mention to the composer", %{
@@ -104,15 +207,25 @@ defmodule ElixirChatWeb.ChatLiveTest do
     general: general,
     user: user
   } do
-    message =
+    first =
       %Message{channel_id: general.id}
       |> Message.historical_changeset(%{author_name: "Архив", body: "Старое сообщение"})
       |> Repo.insert!()
 
+    second =
+      %Message{channel_id: general.id}
+      |> Message.historical_changeset(%{author_name: "Архив", body: "Ещё одно сообщение"})
+      |> Repo.insert!()
+
+    avatar_class = ".avatar-variant-#{:erlang.phash2("архив", 4)}"
+
     {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.id}")
 
-    assert has_element?(view, "#messages-#{message.id}", "Архив")
-    refute has_element?(view, "#message-login-#{message.id}")
+    assert has_element?(view, "#messages-#{first.id} .message-avatar#{avatar_class}", "А")
+    assert has_element?(view, "#messages-#{second.id}.message-continuation")
+    refute has_element?(view, "#messages-#{second.id} .message-avatar")
+    refute has_element?(view, "#message-login-#{first.id}")
+    refute has_element?(view, "#message-login-#{second.id}")
   end
 
   test "invalid channel recovers to general without crashing", %{
