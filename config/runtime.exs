@@ -1,5 +1,16 @@
 import Config
 
+parse_positive_integer = fn name, default ->
+  case Integer.parse(System.get_env(name, default)) do
+    {value, ""} when value > 0 -> value
+    _ -> raise "#{name} must be a positive integer"
+  end
+end
+
+config :elixir_chat, ElixirChat.RepoDiagnostics,
+  slow_query_ms: parse_positive_integer.("DB_SLOW_QUERY_MS", "500"),
+  queue_warn_ms: parse_positive_integer.("DB_QUEUE_WARN_MS", "100")
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration
@@ -54,8 +65,7 @@ if config_env() == :prod do
     # ssl: true,
     url: database_url,
     pool_size: String.to_integer(System.get_env("POOL_SIZE") || "10"),
-    # For machines with several cores, consider starting multiple pools of `pool_size`
-    # pool_count: 4,
+    pool_count: parse_positive_integer.("POOL_COUNT", "1"),
     socket_options: maybe_ipv6
 
   # The secret key base is used to sign/encrypt cookies and other secrets.

@@ -6,6 +6,7 @@ defmodule ElixirChatWeb.UserAuth do
   alias ElixirChat.Accounts.Scope
 
   @session_persistence_version 1
+  @sudo_window_seconds 600
 
   def log_in_user(conn, user) do
     token = Accounts.generate_session_token(user)
@@ -72,6 +73,19 @@ defmodule ElixirChatWeb.UserAuth do
 
   def require_admin(conn, _opts), do: conn |> send_resp(:forbidden, "Forbidden") |> halt()
 
+  def require_sudo(conn, _opts) do
+    if sudo_valid?(get_session(conn, :sudo_at)) do
+      conn
+    else
+      conn |> redirect(to: ~p"/admin/reauth") |> halt()
+    end
+  end
+
+  defp sudo_valid?(sudo) when is_integer(sudo),
+    do: System.system_time(:second) - sudo < @sudo_window_seconds
+
+  defp sudo_valid?(_), do: false
+
   def on_mount(:mount_current_scope, _params, session, socket) do
     user = Accounts.get_user_by_session_token(session["user_token"])
     {:cont, Phoenix.Component.assign_new(socket, :current_scope, fn -> Scope.for_user(user) end)}
@@ -98,8 +112,7 @@ defmodule ElixirChatWeb.UserAuth do
   def on_mount(:ensure_admin, params, session, socket) do
     with {:cont, socket} <- on_mount(:ensure_authenticated, params, session, socket),
          %{role: :admin} <- socket.assigns.current_scope.user,
-         sudo when is_integer(sudo) <- session["sudo_at"],
-         true <- System.system_time(:second) - sudo < 600 do
+         true <- sudo_valid?(session["sudo_at"]) do
       {:cont, socket}
     else
       {:halt, socket} -> {:halt, socket}

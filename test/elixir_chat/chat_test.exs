@@ -80,6 +80,91 @@ defmodule ElixirChat.ChatTest do
     assert Enum.map(newer, & &1.id) == Enum.map(Enum.drop(messages, 5), & &1.id)
   end
 
+  test "full-text search matches complete Russian and English words with cursor isolation", %{
+    scope: scope
+  } do
+    channel = channel_fixture(%{name: "fts-current"})
+    other = channel_fixture(%{name: "fts-other"})
+    _hidden = message_fixture(scope, other, %{body: "привет release hidden"})
+
+    messages =
+      for number <- 1..25 do
+        message_fixture(scope, channel, %{body: "привет release номер #{number}"})
+      end
+
+    assert {:ok, {first_page, true}} = Chat.search_messages(scope, channel.id, "привет", nil)
+    assert length(first_page) == 20
+
+    assert Enum.map(first_page, & &1.id) ==
+             messages |> Enum.reverse() |> Enum.take(20) |> Enum.map(& &1.id)
+
+    assert {:ok, {second_page, false}} =
+             Chat.search_messages(scope, channel.id, "release", List.last(first_page))
+
+    assert length(second_page) == 5
+    assert MapSet.disjoint?(MapSet.new(first_page, & &1.id), MapSet.new(second_page, & &1.id))
+    assert {:ok, {[], false}} = Chat.search_messages(scope, channel.id, "риве", nil)
+    assert {:ok, {[], false}} = Chat.search_messages(scope, channel.id, "hidden", nil)
+  end
+
+  test "message search and jump window do not expose another conversation", %{scope: scope} do
+    current = channel_fixture(%{name: "window-current"})
+    other = channel_fixture(%{name: "window-other"})
+    target = message_fixture(scope, other, %{body: "секретное совпадение"})
+
+    assert {:ok, {[], false}} = Chat.search_messages(scope, current.id, "секретное", nil)
+    assert {:error, :not_found} = Chat.message_window(scope, current.id, target.id)
+  end
+
+  test "direct conversation cursor pagination has stable page boundaries", %{
+    scope: scope,
+    user: user
+  } do
+    directs =
+      for number <- 1..51 do
+        other = user_fixture(%{login: "page.user.#{number}", display_name: "Page #{number}"})
+        {first_id, second_id} = Enum.min_max([user.id, other.id])
+        channel = channel_fixture(%{name: "direct-page-#{number}", kind: :private})
+
+        Repo.insert!(
+          DirectConversation.changeset(%DirectConversation{}, %{
+            channel_id: channel.id,
+            first_user_id: first_id,
+            second_user_id: second_id,
+            last_activity_at: DateTime.add(DateTime.utc_now(), number, :second)
+          })
+        )
+      end
+
+    {first_page, true} = Chat.list_direct_conversations(scope, nil)
+    {second_page, false} = Chat.list_direct_conversations(scope, List.last(first_page))
+
+    expected_ids = directs |> Enum.reverse() |> Enum.map(& &1.id)
+    assert Enum.map(first_page ++ second_page, & &1.id) == expected_ids
+    assert length(first_page) == 50
+    assert length(second_page) == 1
+  end
+
+  test "message sending stays within the SQL telemetry budgets", %{scope: scope} do
+    group = channel_fixture(%{name: "telemetry-group"})
+    other = user_fixture(%{login: "telemetry.other", display_name: "Другой"})
+    {:ok, direct} = Chat.get_or_create_direct_conversation(scope, other.id)
+
+    group_events =
+      count_repo_events(fn ->
+        assert {:ok, _} = Chat.create_message(scope, group, %{body: "Два запроса"})
+      end)
+
+    assert length(group_events) <= 2, inspect(group_events)
+
+    direct_events =
+      count_repo_events(fn ->
+        assert {:ok, _} = Chat.create_message(scope, direct.channel, %{body: "Пять событий"})
+      end)
+
+    assert length(direct_events) <= 5, inspect(direct_events)
+  end
+
   test "direct conversation creation is idempotent and private", %{scope: scope, user: user} do
     other_user = user_fixture(%{login: "other.user", display_name: "Другой"})
     outsider = user_fixture(%{login: "outsider", display_name: "Посторонний"})
@@ -259,7 +344,11 @@ defmodule ElixirChat.ChatTest do
              Chat.create_channel(owner_scope, %{name: "invite-room", kind: :private})
 
     assert {:ok, _} = Chat.invite_member(owner_scope, channel, member)
-    assert [^invited] = Chat.search_invitable_users(member_scope, channel, "target")
+
+    assert [%{id: invited_id, online?: false}] =
+             Chat.search_invitable_users(member_scope, channel, "target")
+
+    assert invited_id == invited.id
     assert {:ok, _} = Chat.invite_member(member_scope, channel, invited)
     assert {:error, :forbidden} = Chat.remove_member(member_scope, channel, invited)
     assert {:ok, _} = Chat.remove_member(owner_scope, channel, invited)
@@ -308,5 +397,32 @@ defmodule ElixirChat.ChatTest do
     %User{}
     |> User.registration_changeset(Map.merge(defaults, attrs))
     |> Repo.insert!()
+  end
+
+  defp count_repo_events(fun) do
+    handler_id = "chat-query-count-#{System.unique_integer([:positive])}"
+    test_pid = self()
+
+    :ok =
+      :telemetry.attach(
+        handler_id,
+        [:elixir_chat, :repo, :query],
+        fn _, _, metadata, _ ->
+          send(test_pid, {:repo_query, metadata[:query]})
+        end,
+        nil
+      )
+
+    fun.()
+    :telemetry.detach(handler_id)
+    drain_repo_events([])
+  end
+
+  defp drain_repo_events(events) do
+    receive do
+      {:repo_query, query} -> drain_repo_events([query | events])
+    after
+      0 -> Enum.reverse(events)
+    end
   end
 end

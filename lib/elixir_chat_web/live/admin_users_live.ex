@@ -3,12 +3,16 @@ defmodule ElixirChatWeb.AdminUsersLive do
   alias ElixirChat.Accounts
 
   def mount(_, _, socket) do
+    {users, has_more?} = Accounts.list_users(socket.assigns.current_scope, nil)
+
     {:ok,
      socket
      |> assign(:page_title, "Пользователи")
      |> assign(:invite_url, nil)
      |> assign(:invite_form, to_form(%{}, as: :invite))
-     |> stream(:users, Accounts.list_users(socket.assigns.current_scope))}
+     |> assign(:users_cursor, List.last(users))
+     |> assign(:has_more_users?, has_more?)
+     |> stream(:users, users)}
   end
 
   def handle_event("invite", %{"invite" => attrs}, socket) do
@@ -19,31 +23,35 @@ defmodule ElixirChatWeb.AdminUsersLive do
   end
 
   def handle_event("toggle", %{"id" => id}, socket) do
-    user =
-      Enum.find(
-        Accounts.list_users(socket.assigns.current_scope),
-        &(&1.id == String.to_integer(id))
-      )
-
-    disabled_at = if user.disabled_at, do: nil, else: DateTime.utc_now(:second)
-
-    case Accounts.update_user(socket.assigns.current_scope, user, %{disabled_at: disabled_at}) do
-      {:ok, user} -> {:noreply, stream_insert(socket, :users, user)}
+    with {:ok, user} <- Accounts.get_managed_user(socket.assigns.current_scope, id),
+         disabled_at <- if(user.disabled_at, do: nil, else: DateTime.utc_now(:second)),
+         {:ok, user} <-
+           Accounts.update_user(socket.assigns.current_scope, user, %{disabled_at: disabled_at}) do
+      {:noreply, stream_insert(socket, :users, user)}
+    else
       _ -> {:noreply, put_flash(socket, :error, "Операция запрещена.")}
     end
   end
 
   def handle_event("reset", %{"id" => id}, socket) do
-    user =
-      Enum.find(
-        Accounts.list_users(socket.assigns.current_scope),
-        &(&1.id == String.to_integer(id))
-      )
-
-    case Accounts.create_password_reset(socket.assigns.current_scope, user) do
-      {:ok, _, token} -> {:noreply, assign(socket, :invite_url, url(~p"/invitation/#{token}"))}
+    with {:ok, user} <- Accounts.get_managed_user(socket.assigns.current_scope, id),
+         {:ok, _, token} <- Accounts.create_password_reset(socket.assigns.current_scope, user) do
+      {:noreply, assign(socket, :invite_url, url(~p"/invitation/#{token}"))}
+    else
       _ -> {:noreply, put_flash(socket, :error, "Нельзя выдать ссылку сброса.")}
     end
+  end
+
+  def handle_event("load_more_users", _params, socket) do
+    {users, has_more?} =
+      Accounts.list_users(socket.assigns.current_scope, socket.assigns.users_cursor)
+
+    socket = Enum.reduce(users, socket, &stream_insert(&2, :users, &1))
+
+    {:noreply,
+     socket
+     |> assign(:users_cursor, List.last(users) || socket.assigns.users_cursor)
+     |> assign(:has_more_users?, has_more?)}
   end
 
   def render(assigns) do
@@ -95,6 +103,13 @@ defmodule ElixirChatWeb.AdminUsersLive do
             </div>
           </div>
         </div>
+        <button
+          :if={@has_more_users?}
+          id="load-more-users"
+          type="button"
+          phx-click="load_more_users"
+          class="btn mt-4 w-full"
+        >Показать ещё</button>
       </main>
     </Layouts.app>
     """

@@ -37,6 +37,52 @@
         current_user={@current_scope.user}
       />
 
+      <section :if={@message_search_open?} id="message-search-panel" class="message-search-panel">
+        <header>
+          <strong>Поиск в разговоре</strong>
+          <button
+            id="close-message-search"
+            type="button"
+            phx-click="close_message_search"
+            aria-label="Закрыть поиск"
+          >
+            <.icon name="hero-x-mark" class="size-4" />
+          </button>
+        </header>
+        <.form for={@message_search_form} id="message-search-form" phx-submit="search_messages">
+          <.input
+            field={@message_search_form[:query]}
+            id="message-search-query"
+            type="search"
+            label="Слова в сообщении"
+            autocomplete="off"
+          />
+          <button id="submit-message-search" type="submit">Найти</button>
+        </.form>
+        <div id="message-search-results" class="message-search-results">
+          <button
+            :for={message <- @message_search_results}
+            id={"message-search-result-#{message.id}"}
+            type="button"
+            phx-click="jump_to_message"
+            phx-value-message-id={message.id}
+          >
+            <span><strong>{message.author_name}</strong><time>{Calendar.strftime(
+              message.inserted_at,
+              "%d.%m.%Y %H:%M"
+            )}</time></span>
+            <p>{message_snippet(message.body)}</p>
+          </button>
+          <p :if={@message_search_results == []}>Совпадений нет</p>
+        </div>
+        <button
+          :if={@message_search_has_more?}
+          id="load-more-message-results"
+          type="button"
+          phx-click="load_more_message_results"
+        >Показать ещё</button>
+      </section>
+
       <div class="message-window">
         <div
           id="messages"
@@ -48,7 +94,11 @@
           role="log"
           aria-live="polite"
         >
-          <.message :for={{_dom_id, item} <- @streams.messages} item={item} />
+          <.message
+            :for={{_dom_id, item} <- @streams.messages}
+            item={item}
+            highlighted_message_id={@highlighted_message_id}
+          />
         </div>
         <button
           :if={@pending_new_messages?}

@@ -46,6 +46,10 @@ defmodule ElixirChatWeb.Router do
     pipe_through [:browser, :require_authenticated_user, :require_admin]
     get "/reauth", AdminSessionController, :new
     post "/reauth", AdminSessionController, :create
+  end
+
+  scope "/admin", ElixirChatWeb do
+    pipe_through [:browser, :require_authenticated_user, :require_admin, :require_sudo]
 
     live_session :admin, on_mount: [{ElixirChatWeb.UserAuth, :ensure_admin}] do
       live "/users", AdminUsersLive, :index

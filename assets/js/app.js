@@ -128,6 +128,9 @@ const MessageList = {
     this.handleEvent("scroll_to_latest", () => {
       this.scrollToLatest("auto")
     })
+    this.handleEvent("scroll_to_message", ({id}) => {
+      requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({block: "center"}))
+    })
     this.handleEvent("older_messages_loaded", () => {
       if (this.previousScrollHeight !== null) {
         this.el.scrollTop += this.el.scrollHeight - this.previousScrollHeight

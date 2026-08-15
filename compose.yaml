@@ -31,6 +31,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-elixir_chat}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POOL_SIZE: ${POOL_SIZE:-10}
+      POOL_COUNT: ${POOL_COUNT:-1}
+      DB_SLOW_QUERY_MS: ${DB_SLOW_QUERY_MS:-500}
+      DB_QUEUE_WARN_MS: ${DB_QUEUE_WARN_MS:-100}
     volumes:
       - .:/app
       - mix_deps:/app/deps

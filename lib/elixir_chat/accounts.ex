@@ -2,12 +2,14 @@ defmodule ElixirChat.Accounts do
   import Ecto.Query
   alias Ecto.Multi
   alias ElixirChat.Repo
-  alias ElixirChat.Accounts.{AuditEvent, Invitation, Scope, User, UserToken}
+  alias ElixirChat.Accounts.{AuditEvent, Invitation, Scope, User, UserSearchResult, UserToken}
   alias ElixirChat.Chat.{Channel, ChannelMembership}
+  alias ElixirChat.OnlineUsers
 
   @session_days 30
   @session_renewal_window_days 29
   @session_absolute_days 180
+  @admin_bootstrap_lock_key 726_354_891
 
   def get_user_by_login_and_password(login, password)
       when is_binary(login) and is_binary(password) do
@@ -175,7 +177,7 @@ defmodule ElixirChat.Accounts do
 
   def bootstrap_invitation(login, name) do
     Repo.transaction(fn ->
-      Repo.query!("LOCK TABLE users IN EXCLUSIVE MODE")
+      Repo.query!("SELECT pg_advisory_xact_lock($1)", [@admin_bootstrap_lock_key])
       if Repo.exists?(from u in User, where: u.role == :admin), do: Repo.rollback(:admin_exists)
       token = random_token()
       now = DateTime.utc_now(:second)
@@ -285,26 +287,67 @@ defmodule ElixirChat.Accounts do
     end
   end
 
-  def list_users(%Scope{user: %{role: :admin}}),
-    do: Repo.all(from u in User, order_by: [asc: u.login])
+  @user_page_size 50
+
+  def list_users(%Scope{user: %{role: :admin}} = scope) do
+    {users, _has_more?} = list_users(scope, nil)
+    users
+  end
 
   def list_users(_), do: []
+
+  def list_users(%Scope{user: %{role: :admin}}, cursor) do
+    query =
+      User
+      |> order_by([user], asc: user.login, asc: user.id)
+      |> limit(^(@user_page_size + 1))
+
+    query =
+      case user_cursor(cursor) do
+        nil ->
+          query
+
+        {login, id} ->
+          where(query, [user], fragment("(?, ?) > (?, ?)", user.login, user.id, ^login, ^id))
+      end
+
+    users = Repo.all(query)
+    {Enum.take(users, @user_page_size), length(users) > @user_page_size}
+  end
+
+  def list_users(_, _), do: {[], false}
+
+  def get_managed_user(%Scope{user: %{role: :admin}}, id) do
+    with {id, ""} when id > 0 <- Integer.parse(to_string(id)),
+         %User{} = user <- Repo.get(User, id) do
+      {:ok, user}
+    else
+      _ -> {:error, :not_found}
+    end
+  end
+
+  def get_managed_user(_, _), do: {:error, :forbidden}
 
   def search_messageable_users(scope, query, limit \\ 20)
 
   def search_messageable_users(%Scope{user: current_user}, query, limit)
       when is_binary(query) and is_integer(limit) and limit > 0 do
-    pattern = "%#{String.trim(query)}%"
+    online = OnlineUsers.search(query, [current_user.id], limit)
 
-    User
-    |> where([user], user.id != ^current_user.id and is_nil(user.disabled_at))
-    |> where([user], ilike(user.display_name, ^pattern) or ilike(user.login, ^pattern))
-    |> order_by([user], asc: user.display_name, asc: user.login)
-    |> limit(^limit)
-    |> Repo.all()
+    maybe_append_database_results(
+      online,
+      query,
+      [current_user.id | Enum.map(online, & &1.id)],
+      limit
+    )
   end
 
   def search_messageable_users(_, _, _), do: []
+
+  def search_active_users(query, excluded_ids, limit)
+      when is_binary(query) and is_list(excluded_ids) and is_integer(limit) and limit > 0 do
+    database_user_search(query, excluded_ids, limit)
+  end
 
   def update_user(%Scope{user: %{role: :admin} = actor}, %User{role: :user} = user, attrs) do
     Multi.new()
@@ -323,6 +366,7 @@ defmodule ElixirChat.Accounts do
     |> case do
       {:ok, %{user: user}} ->
         if user.disabled_at, do: disconnect_user(user)
+        broadcast_presence_update(user)
         {:ok, user}
 
       {:error, _, reason, _} ->
@@ -454,6 +498,52 @@ defmodule ElixirChat.Accounts do
 
   defp disconnect_user(user),
     do: ElixirChatWeb.Endpoint.broadcast("users_sessions:#{user.id}", "disconnect", %{})
+
+  defp broadcast_presence_update(user) do
+    Phoenix.PubSub.broadcast(
+      ElixirChat.PubSub,
+      ElixirChat.Chat.user_topic(user.id),
+      {:user_presence_updated, user}
+    )
+  end
+
+  defp maybe_append_database_results(online, query, excluded_ids, limit) do
+    remaining = limit - length(online)
+
+    if remaining > 0 and String.length(String.trim(query)) >= 3 do
+      online ++ database_user_search(query, excluded_ids, remaining)
+    else
+      online
+    end
+  end
+
+  defp database_user_search(query, excluded_ids, limit) do
+    pattern = "%#{String.trim(query)}%"
+
+    User
+    |> where([user], is_nil(user.disabled_at) and user.id not in ^excluded_ids)
+    |> where(
+      [user],
+      ilike(user.display_name, ^pattern) or
+        fragment("?::text ILIKE ?", user.login, ^pattern)
+    )
+    |> order_by([user], asc: user.display_name, asc: user.login, asc: user.id)
+    |> limit(^limit)
+    |> select([user], %{id: user.id, login: user.login, display_name: user.display_name})
+    |> Repo.all()
+    |> Enum.map(fn user ->
+      %UserSearchResult{
+        id: user.id,
+        login: user.login,
+        display_name: user.display_name,
+        online?: false
+      }
+    end)
+  end
+
+  defp user_cursor(nil), do: nil
+  defp user_cursor(%User{login: login, id: id}), do: {login, id}
+  defp user_cursor(%{login: login, id: id}), do: {login, id}
 
   defp hash(token), do: :crypto.hash(:sha256, token)
   defp encode(token), do: Base.url_encode64(token, padding: false)

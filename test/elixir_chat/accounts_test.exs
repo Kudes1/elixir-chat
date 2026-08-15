@@ -134,8 +134,39 @@ defmodule ElixirChat.AccountsTest do
 
     scope = Scope.for_user(current_user)
 
-    assert Accounts.search_messageable_users(scope, "ИСКОМЫЙ") == [match]
-    assert current_user not in Accounts.search_messageable_users(scope, "")
+    assert [%{id: id, online?: false}] =
+             Accounts.search_messageable_users(scope, "ИСКОМЫЙ")
+
+    assert id == match.id
+    refute Enum.any?(Accounts.search_messageable_users(scope, ""), &(&1.id == current_user.id))
+  end
+
+  test "administrator user list is cursor-paginated and actions load by id" do
+    admin = user_fixture(%{login: "admin.pagination", role: :admin})
+    now = DateTime.utc_now(:second)
+
+    rows =
+      for number <- 1..55 do
+        %{
+          login: "paged.#{String.pad_leading(to_string(number), 3, "0")}",
+          display_name: "Paged #{number}",
+          hashed_password: "not-used-in-this-test",
+          role: :user,
+          inserted_at: now,
+          updated_at: now
+        }
+      end
+
+    Repo.insert_all(User, rows)
+    scope = Scope.for_user(admin)
+    {first_page, true} = Accounts.list_users(scope, nil)
+    {second_page, false} = Accounts.list_users(scope, List.last(first_page))
+
+    assert length(first_page) == 50
+    assert length(second_page) == 6
+    assert Enum.uniq_by(first_page ++ second_page, & &1.id) == first_page ++ second_page
+    assert {:ok, loaded} = Accounts.get_managed_user(scope, List.last(second_page).id)
+    assert loaded.id == List.last(second_page).id
   end
 
   test "invitation registration adds the new user to general" do

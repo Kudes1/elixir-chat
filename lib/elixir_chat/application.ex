@@ -7,12 +7,15 @@ defmodule ElixirChat.Application do
 
   @impl true
   def start(_type, _args) do
+    :ok = ElixirChat.RepoDiagnostics.attach()
+
     children = [
       ElixirChatWeb.Telemetry,
       ElixirChat.Repo,
       {DNSCluster, query: Application.get_env(:elixir_chat, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: ElixirChat.PubSub},
       ElixirChatWeb.Presence,
+      ElixirChat.OnlineUsers,
       # Start a worker by calling: ElixirChat.Worker.start_link(arg)
       # {ElixirChat.Worker, arg},
       # Start to serve requests, typically the last entry

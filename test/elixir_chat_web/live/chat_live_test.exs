@@ -3,6 +3,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
 
   import Phoenix.LiveViewTest
 
+  alias ElixirChat.Accounts
   alias ElixirChat.Chat
   alias ElixirChat.Chat.Channel
   alias ElixirChat.Chat.Message
@@ -42,6 +43,27 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert has_element?(view, "#messages article p", "Новое сообщение")
     assert [message] = Chat.list_messages(general.id)
     assert message.body == "Новое сообщение"
+  end
+
+  test "searches the current conversation and jumps to a highlighted message", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, target} =
+      Chat.create_message(Scope.for_user(user), general, %{body: "Точное слово орбита"})
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+    view |> element("#open-message-search") |> render_click()
+
+    view
+    |> form("#message-search-form", message_search: %{query: "орбита"})
+    |> render_submit()
+
+    assert has_element?(view, "#message-search-result-#{target.id}", "Точное слово орбита")
+    view |> element("#message-search-result-#{target.id}") |> render_click()
+    assert has_element?(view, "#messages-#{target.id}.message-highlighted")
+    refute has_element?(view, "#message-search-panel")
   end
 
   test "shows distinct logins beside identical display names", %{
@@ -531,6 +553,36 @@ defmodule ElixirChatWeb.ChatLiveTest do
 
     GenServer.stop(first.pid)
     GenServer.stop(second.pid)
+  end
+
+  test "an active user's renamed Presence metadata refreshes and blocking disconnects", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    admin = register_user(%{login: "presence.admin", display_name: "Администратор", role: :admin})
+    ElixirChat.OnlineUsers.subscribe_count()
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+    assert_receive {:online_count, _}
+
+    assert {:ok, renamed} =
+             Accounts.update_user(Scope.for_user(admin), user, %{display_name: "Новое имя"})
+
+    assert_receive {:online_count, _}
+    assert render(view) =~ "Новое имя"
+    assert [%{id: id}] = ElixirChat.OnlineUsers.search("новое имя", [], 20)
+    assert id == user.id
+
+    monitor = Process.monitor(view.pid)
+
+    assert {:ok, _blocked} =
+             Accounts.update_user(Scope.for_user(admin), renamed, %{
+               disabled_at: DateTime.utc_now(:second)
+             })
+
+    assert_receive {:DOWN, ^monitor, :process, _pid, _reason}
+    assert_receive {:online_count, _}
+    assert ElixirChat.OnlineUsers.search("новое имя", [], 20) == []
   end
 
   test "creates a private channel from the accessible catalog", %{

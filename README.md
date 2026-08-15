@@ -45,7 +45,23 @@ Production-сборка также проверяет gzip-бюджеты осн
 
 ## Production image
 
-Минимальный release-образ собирается отдельным target:
+Минимальный release-образ собирается и запускается через production override:
+
+```sh
+cp .env.example .env
+# Замените SECRET_KEY_BASE, POSTGRES_PASSWORD и PHX_HOST на production-значения.
+docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+```
+
+В этом режиме web-сервис использует release без bind-mount исходников и без
+Phoenix code reloader. Перед стартом release автоматически применяет миграции
+и запускает идемпотентный seed. Для остановки используйте тот же набор файлов:
+
+```sh
+docker compose -f compose.yaml -f compose.prod.yaml down
+```
+
+Образ отдельно можно собрать командой:
 
 ```sh
 docker build --target production -t orbit:latest .

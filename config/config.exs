@@ -11,6 +11,10 @@ config :elixir_chat,
   ecto_repos: [ElixirChat.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+config :elixir_chat, ElixirChat.RepoDiagnostics,
+  slow_query_ms: 500,
+  queue_warn_ms: 100
+
 # Configure the endpoint
 config :elixir_chat, ElixirChatWeb.Endpoint,
   url: [host: "localhost"],

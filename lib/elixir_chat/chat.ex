@@ -4,12 +4,15 @@ defmodule ElixirChat.Chat do
   import Ecto.Query, warn: false
 
   alias Ecto.Multi
+  alias ElixirChat.Accounts
   alias ElixirChat.Accounts.{Scope, User}
   alias ElixirChat.Chat.{Channel, ChannelMembership, DirectConversation, Message}
   alias ElixirChat.Repo
 
   @pubsub ElixirChat.PubSub
   @message_page_size 50
+  @direct_page_size 50
+  @search_page_size 20
 
   def list_channels do
     Channel
@@ -250,34 +253,63 @@ defmodule ElixirChat.Chat do
       when is_binary(query) and is_integer(limit) and limit > 0 do
     with {:ok, channel} <- resolve_group_channel(%Scope{user: actor}, channel_or_id),
          true <- channel.kind == :private do
-      pattern = "%#{String.trim(query)}%"
-
-      User
-      |> where([user], is_nil(user.disabled_at))
-      |> where([user], ilike(user.display_name, ^pattern) or ilike(user.login, ^pattern))
-      |> where(
-        [user],
-        not exists(
+      member_ids =
+        Repo.all(
           from membership in ChannelMembership,
-            where:
-              membership.channel_id == ^channel.id and membership.user_id == parent_as(:user).id
+            where: membership.channel_id == ^channel.id,
+            select: membership.user_id
         )
-      )
-      |> from(as: :user)
-      |> order_by([user], asc: user.display_name, asc: user.login)
-      |> limit(^limit)
-      |> Repo.all()
+
+      excluded_ids = Enum.uniq([actor.id | member_ids])
+      online = ElixirChat.OnlineUsers.search(query, excluded_ids, limit)
+      remaining = limit - length(online)
+
+      if remaining > 0 and String.length(String.trim(query)) >= 3 do
+        online ++
+          Accounts.search_active_users(
+            query,
+            excluded_ids ++ Enum.map(online, & &1.id),
+            remaining
+          )
+      else
+        online
+      end
     else
       _ -> []
     end
   end
 
   def list_direct_conversations(%Scope{user: user}) do
-    DirectConversation
-    |> where([direct], direct.first_user_id == ^user.id or direct.second_user_id == ^user.id)
-    |> order_by([direct], desc: direct.last_activity_at, desc: direct.id)
-    |> preload([:channel, :first_user, :second_user])
-    |> Repo.all()
+    {directs, _has_more?} = list_direct_conversations(%Scope{user: user}, nil)
+    directs
+  end
+
+  def list_direct_conversations(%Scope{user: user}, cursor) do
+    {cursor_at, cursor_id} = direct_cursor_params(cursor)
+    limit = @direct_page_size + 1
+
+    sql = """
+    SELECT id FROM (
+      (SELECT id, last_activity_at FROM direct_conversations
+       WHERE first_user_id = $1
+         AND ($2::timestamptz IS NULL OR (last_activity_at, id) < ($2, $3))
+       ORDER BY last_activity_at DESC, id DESC LIMIT $4)
+      UNION ALL
+      (SELECT id, last_activity_at FROM direct_conversations
+       WHERE second_user_id = $1
+         AND ($2::timestamptz IS NULL OR (last_activity_at, id) < ($2, $3))
+       ORDER BY last_activity_at DESC, id DESC LIMIT $4)
+    ) AS conversations
+    ORDER BY last_activity_at DESC, id DESC
+    LIMIT $4
+    """
+
+    ids =
+      Repo.query!(sql, [user.id, cursor_at, cursor_id, limit]).rows
+      |> List.flatten()
+
+    directs = load_directs(ids)
+    {Enum.take(directs, @direct_page_size), length(ids) > @direct_page_size}
   end
 
   def get_channel(id) do
@@ -414,8 +446,13 @@ defmodule ElixirChat.Chat do
     |> messages_query()
     |> where(
       [message],
-      message.inserted_at < ^cursor.inserted_at or
-        (message.inserted_at == ^cursor.inserted_at and message.id < ^cursor.id)
+      fragment(
+        "(?, ?) < (?, ?)",
+        message.inserted_at,
+        message.id,
+        ^cursor.inserted_at,
+        ^cursor.id
+      )
     )
     |> message_page(page_size)
   end
@@ -438,8 +475,13 @@ defmodule ElixirChat.Chat do
       |> where([message], message.channel_id == ^channel_id)
       |> where(
         [message],
-        message.inserted_at > ^cursor.inserted_at or
-          (message.inserted_at == ^cursor.inserted_at and message.id > ^cursor.id)
+        fragment(
+          "(?, ?) > (?, ?)",
+          message.inserted_at,
+          message.id,
+          ^cursor.inserted_at,
+          ^cursor.id
+        )
       )
       |> order_by([message], asc: message.inserted_at, asc: message.id)
       |> preload([:channel, :user])
@@ -452,6 +494,45 @@ defmodule ElixirChat.Chat do
   def list_messages_after(%Scope{} = scope, channel_id, cursor, page_size) do
     with {:ok, channel} <- readable_channel(scope, channel_id) do
       {:ok, list_messages_after(channel.id, cursor, page_size)}
+    end
+  end
+
+  def search_messages(%Scope{} = scope, channel_id, query, cursor \\ nil)
+      when is_binary(query) do
+    query = String.trim(query)
+
+    with true <- query != "",
+         {:ok, channel} <- readable_channel(scope, channel_id) do
+      messages =
+        channel.id
+        |> message_search_query(query, cursor)
+        |> limit(^(@search_page_size + 1))
+        |> Repo.all()
+
+      {:ok, {Enum.take(messages, @search_page_size), length(messages) > @search_page_size}}
+    else
+      false -> {:ok, {[], false}}
+      {:error, _} = error -> error
+    end
+  end
+
+  def message_window(%Scope{} = scope, channel_id, message_id, size \\ 150)
+      when is_integer(size) and size > 0 and size <= 150 do
+    with {:ok, channel} <- readable_channel(scope, channel_id),
+         {:ok, message_id} <- parse_id(message_id),
+         %Message{} = target <-
+           Repo.one(
+             Message
+             |> where([message], message.channel_id == ^channel.id and message.id == ^message_id)
+             |> preload([:channel, :user])
+           ) do
+      before_size = div(size - 1, 2)
+      after_size = size - before_size - 1
+      {before, has_older?} = list_messages_before(channel.id, target, before_size)
+      {after_messages, has_newer?} = list_messages_after(channel.id, target, after_size)
+      {:ok, {before ++ [target] ++ after_messages, has_older?, has_newer?}}
+    else
+      _ -> {:error, :not_found}
     end
   end
 
@@ -513,10 +594,13 @@ defmodule ElixirChat.Chat do
   defp authorize_conversation(%Scope{user: user}, %Channel{purpose: :direct, id: channel_id}) do
     query =
       from direct in DirectConversation,
+        join: channel in assoc(direct, :channel),
+        join: first_user in assoc(direct, :first_user),
+        join: second_user in assoc(direct, :second_user),
         where:
           direct.channel_id == ^channel_id and
             (direct.first_user_id == ^user.id or direct.second_user_id == ^user.id),
-        preload: [:channel, :first_user, :second_user]
+        preload: [channel: channel, first_user: first_user, second_user: second_user]
 
     case Repo.one(query) do
       %DirectConversation{} = direct ->
@@ -552,8 +636,7 @@ defmodule ElixirChat.Chat do
     |> Repo.transaction()
     |> case do
       {:ok, %{message: message, direct: direct}} ->
-        message = Repo.preload(message, [:channel, :user])
-        direct = preload_direct(direct)
+        message = with_message_associations(message, user, direct.channel)
         broadcast_direct(direct, {:direct_message_created, direct, message})
         {:ok, message}
 
@@ -570,7 +653,7 @@ defmodule ElixirChat.Chat do
     |> message_changeset(channel, attrs)
     |> Repo.insert()
     |> case do
-      {:ok, message} -> {:ok, Repo.preload(message, [:channel, :user])}
+      {:ok, message} -> {:ok, with_message_associations(message, user, channel)}
       error -> error
     end
   end
@@ -579,6 +662,9 @@ defmodule ElixirChat.Chat do
     %Message{channel_id: channel.id, user_id: user.id, author_name: user.display_name}
     |> Message.changeset(attrs)
   end
+
+  defp with_message_associations(message, user, channel),
+    do: %{message | user: user, channel: channel}
 
   defp get_public_channel_by_id(id) do
     case Repo.one(
@@ -630,7 +716,7 @@ defmodule ElixirChat.Chat do
   defp parse_public_id(_public_id), do: :error
 
   defp authorized_group_channel(%Scope{user: user}, channel_id) do
-    query =
+    Repo.one(
       from channel in Channel,
         as: :channel,
         where:
@@ -642,13 +728,17 @@ defmodule ElixirChat.Chat do
               where:
                 membership.channel_id == parent_as(:channel).id and
                   membership.user_id == ^user.id
-          )
-
-    Repo.one(query) || legacy_public_channel(channel_id)
+          ) or
+            (channel.kind == :public and
+               not exists(
+                 from membership in ChannelMembership,
+                   where: membership.channel_id == parent_as(:channel).id
+               ))
+    )
   end
 
   defp authorized_group_channel_by_public_id(%Scope{user: user}, public_id) do
-    query =
+    Repo.one(
       from channel in Channel,
         as: :channel,
         where:
@@ -660,40 +750,12 @@ defmodule ElixirChat.Chat do
               where:
                 membership.channel_id == parent_as(:channel).id and
                   membership.user_id == ^user.id
-          )
-
-    Repo.one(query) || legacy_public_channel_by_public_id(public_id)
-  end
-
-  # Channels created before memberships existed are backfilled by the migration. This
-  # fallback only keeps isolated legacy/test databases usable when a group has no rows.
-  defp legacy_public_channel(channel_id) do
-    Repo.one(
-      from channel in Channel,
-        as: :legacy_channel,
-        where:
-          channel.id == ^channel_id and channel.purpose == :group and channel.kind == :public and
-            is_nil(channel.archived_at),
-        where:
-          not exists(
-            from membership in ChannelMembership,
-              where: membership.channel_id == parent_as(:legacy_channel).id
-          )
-    )
-  end
-
-  defp legacy_public_channel_by_public_id(public_id) do
-    Repo.one(
-      from channel in Channel,
-        as: :legacy_channel,
-        where:
-          channel.public_id == ^public_id and channel.purpose == :group and
-            channel.kind == :public and is_nil(channel.archived_at),
-        where:
-          not exists(
-            from membership in ChannelMembership,
-              where: membership.channel_id == parent_as(:legacy_channel).id
-          )
+          ) or
+            (channel.kind == :public and
+               not exists(
+                 from membership in ChannelMembership,
+                   where: membership.channel_id == parent_as(:channel).id
+               ))
     )
   end
 
@@ -810,6 +872,60 @@ defmodule ElixirChat.Chat do
     |> where([message], message.channel_id == ^channel_id)
     |> order_by([message], desc: message.inserted_at, desc: message.id)
     |> preload([:channel, :user])
+  end
+
+  defp message_search_query(channel_id, query, cursor) do
+    base =
+      from message in Message,
+        join: channel in assoc(message, :channel),
+        left_join: user in assoc(message, :user),
+        where:
+          message.channel_id == ^channel_id and
+            fragment(
+              "to_tsvector('simple', ?) @@ websearch_to_tsquery('simple', ?)",
+              message.body,
+              ^query
+            ),
+        order_by: [desc: message.inserted_at, desc: message.id],
+        preload: [channel: channel, user: user]
+
+    case cursor do
+      %Message{} = message ->
+        where(
+          base,
+          [message],
+          fragment(
+            "(?, ?) < (?, ?)",
+            message.inserted_at,
+            message.id,
+            ^message.inserted_at,
+            ^message.id
+          )
+        )
+
+      _ ->
+        base
+    end
+  end
+
+  defp direct_cursor_params(nil), do: {nil, nil}
+  defp direct_cursor_params(%{last_activity_at: at, id: id}), do: {at, id}
+
+  defp load_directs([]), do: []
+
+  defp load_directs(ids) do
+    directs =
+      Repo.all(
+        from direct in DirectConversation,
+          join: channel in assoc(direct, :channel),
+          join: first_user in assoc(direct, :first_user),
+          join: second_user in assoc(direct, :second_user),
+          where: direct.id in ^ids,
+          preload: [channel: channel, first_user: first_user, second_user: second_user]
+      )
+
+    by_id = Map.new(directs, &{&1.id, &1})
+    Enum.flat_map(ids, fn id -> if direct = by_id[id], do: [direct], else: [] end)
   end
 
   defp message_page(query, page_size) do

@@ -1,0 +1,19 @@
+services:
+  web:
+    build:
+      context: .
+      target: production
+    image: elixir-chat:prod
+    entrypoint: !reset null
+    command: !reset null
+    environment:
+      DATABASE_URL: ecto://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db/${POSTGRES_DB:-elixir_chat}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?Set SECRET_KEY_BASE in .env}
+      PHX_HOST: ${PHX_HOST:?Set PHX_HOST in .env}
+      PHX_SERVER: "true"
+      PORT: 4000
+      POOL_SIZE: ${POOL_SIZE:-10}
+      POOL_COUNT: ${POOL_COUNT:-1}
+      DB_SLOW_QUERY_MS: ${DB_SLOW_QUERY_MS:-500}
+      DB_QUEUE_WARN_MS: ${DB_QUEUE_WARN_MS:-100}
+    volumes: !reset []
