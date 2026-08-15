@@ -20,6 +20,16 @@ defmodule ElixirChat.OnlineUsers do
     end
   end
 
+  def online_ids do
+    case :ets.whereis(@table) do
+      :undefined ->
+        MapSet.new()
+
+      _table ->
+        @table |> :ets.tab2list() |> Enum.into(MapSet.new(), fn {id, _, _, _, _} -> id end)
+    end
+  end
+
   def subscribe_count,
     do: Phoenix.PubSub.subscribe(ElixirChat.PubSub, @count_topic)
 

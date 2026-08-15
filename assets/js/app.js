@@ -128,9 +128,6 @@ const MessageList = {
     this.handleEvent("scroll_to_latest", () => {
       this.scrollToLatest("auto")
     })
-    this.handleEvent("scroll_to_message", ({id}) => {
-      requestAnimationFrame(() => document.getElementById(id)?.scrollIntoView({block: "center"}))
-    })
     this.handleEvent("older_messages_loaded", () => {
       if (this.previousScrollHeight !== null) {
         this.el.scrollTop += this.el.scrollHeight - this.previousScrollHeight
@@ -230,10 +227,35 @@ const SidebarSections = {
   },
 }
 
+const MessageDeleteWindow = {
+  mounted() {
+    this.scheduleHide()
+  },
+  updated() {
+    this.scheduleHide()
+  },
+  scheduleHide() {
+    if (this.timer) clearTimeout(this.timer)
+
+    const deadline = Number(this.el.dataset.deleteDeadline)
+    if (!deadline) return
+
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      this.el.remove()
+    } else {
+      this.timer = setTimeout(() => this.el.remove(), remaining)
+    }
+  },
+  destroyed() {
+    if (this.timer) clearTimeout(this.timer)
+  },
+}
+
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, MessageComposer, MessageList, SidebarSections},
+  hooks: {...colocatedHooks, MessageComposer, MessageList, SidebarSections, MessageDeleteWindow},
 })
 
 // Show progress bar on live navigation and form submits

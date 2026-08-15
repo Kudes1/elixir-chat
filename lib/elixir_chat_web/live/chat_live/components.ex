@@ -11,6 +11,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
   attr :channel_catalog_open?, :boolean, required: true
   attr :current_user, :any, required: true
   attr :visitor_name, :string, required: true
+  attr :online_user_ids, :any, required: true
 
   def sidebar(assigns) do
     ~H"""
@@ -152,6 +153,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
                   name={item.other_user.display_name}
                   user_id={item.other_user.id}
                   class="direct-avatar"
+                  online?={MapSet.member?(@online_user_ids, item.other_user.id)}
                 />
                 <span class="direct-link-details">
                   <strong>{item.other_user.display_name}</strong>
@@ -184,6 +186,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
   attr :other_user, :any, default: nil
   attr :online_count, :integer, required: true
   attr :current_user, :any, required: true
+  attr :online_user_ids, :any, required: true
 
   def conversation_header(assigns) do
     ~H"""
@@ -205,6 +208,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
             name={@other_user.display_name}
             user_id={@other_user.id}
             class="header-avatar"
+            online?={MapSet.member?(@online_user_ids, @other_user.id)}
           />
           <div>
             <h2 class="channel-title">{@other_user.display_name}</h2><p>
@@ -220,14 +224,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
         </div>
       <% end %>
       <div class="channel-header-actions">
-        <span class="online-indicator"><i></i>{@online_count} в сети</span>
-        <button
-          id="open-message-search"
-          type="button"
-          class="channel-action"
-          phx-click="open_message_search"
-          aria-label="Поиск сообщений"
-        ><.icon name="hero-magnifying-glass" class="size-5" /></button>
+        <span :if={is_nil(@other_user)} class="online-indicator"><i></i>{@online_count} в сети</span>
         <button
           :if={is_nil(@other_user)}
           id="open-channel-settings"
@@ -316,6 +313,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
   attr :memberships, :list, required: true
   attr :invite_form, :any, required: true
   attr :invite_results, :list, required: true
+  attr :online_user_ids, :any, required: true
 
   def channel_settings(assigns) do
     ~H"""
@@ -426,6 +424,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
                 name={membership.user.display_name}
                 user_id={membership.user.id}
                 class="channel-member-avatar"
+                online?={MapSet.member?(@online_user_ids, membership.user.id)}
               />
               <span class="channel-member-identity">
                 <strong>{membership.user.display_name}</strong>
@@ -481,17 +480,27 @@ defmodule ElixirChatWeb.ChatLive.Components do
   end
 
   attr :item, :map, required: true
-  attr :highlighted_message_id, :integer, default: nil
+  attr :current_user, :any, required: true
+  attr :channel, :any, required: true
 
   def message(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :delete_deadline,
+        delete_deadline_ms(assigns.item.message, assigns.channel, assigns.current_user)
+      )
+
     ~H"""
     <article
       id={"messages-#{@item.id}"}
-      class={[
-        "message",
-        @item.continuation? && "message-continuation",
-        @highlighted_message_id == @item.id && "message-highlighted"
-      ]}
+      class={["message", @item.continuation? && "message-continuation"]}
+      phx-remove={
+        JS.hide(
+          transition: {"message-remove-transition", "message-remove-start", "message-remove-end"},
+          time: 160
+        )
+      }
     >
       <.user_avatar
         :if={!@item.continuation?}
@@ -518,8 +527,53 @@ defmodule ElixirChatWeb.ChatLive.Components do
         </div>
         <.message_body body={@item.message.body} />
       </div>
+      <div
+        :if={deletable?(@item.message, @channel, @current_user)}
+        id={"message-actions-#{@item.message.id}"}
+        class="message-actions"
+        phx-hook={@delete_deadline && "MessageDeleteWindow"}
+        data-delete-deadline={@delete_deadline}
+      >
+        <button
+          id={"message-menu-toggle-#{@item.message.id}"}
+          type="button"
+          class="message-menu-toggle"
+          phx-click={JS.toggle(to: "#message-menu-#{@item.message.id}")}
+          aria-haspopup="true"
+          aria-controls={"message-menu-#{@item.message.id}"}
+          aria-label="Действия с сообщением"
+        ><.icon name="hero-ellipsis-horizontal" class="size-4" /></button>
+        <div
+          id={"message-menu-#{@item.message.id}"}
+          class="message-menu"
+          role="menu"
+          phx-click-away={JS.hide(to: "#message-menu-#{@item.message.id}")}
+          style="display: none;"
+        >
+          <button
+            id={"delete-message-#{@item.message.id}"}
+            type="button"
+            class="message-menu-item message-menu-item-danger"
+            role="menuitem"
+            phx-click="delete_message"
+            phx-value-message-id={@item.message.id}
+            data-confirm="Удалить сообщение?"
+          >Удалить</button>
+        </div>
+      </div>
     </article>
     """
+  end
+
+  def deletable?(message, channel, current_user) do
+    ElixirChat.Chat.can_delete_message?(current_user, message, channel)
+  end
+
+  defp delete_deadline_ms(message, channel, current_user) do
+    if ElixirChat.Chat.own_message?(message, current_user) and
+         not ElixirChat.Chat.owner_override?(channel, current_user) do
+      message |> ElixirChat.Chat.delete_deadline() |> DateTime.to_unix(:millisecond)
+    end
   end
 
   attr :form, :any, required: true
@@ -566,12 +620,19 @@ defmodule ElixirChatWeb.ChatLive.Components do
   attr :name, :string, required: true
   attr :user_id, :integer, default: nil
   attr :class, :any, required: true
+  attr :online?, :boolean, default: nil
 
   def user_avatar(assigns) do
     assigns = assign(assigns, :variant, avatar_variant(assigns.user_id, assigns.name))
 
     ~H"""
-    <div class={[@class, "avatar-variant-#{@variant}"]}>{initials(@name)}</div>
+    <div class={[@class, "avatar-variant-#{@variant}"]}>
+      {initials(@name)}
+      <i
+        :if={!is_nil(@online?)}
+        class={["avatar-status-dot", @online? && "avatar-status-dot--online"]}
+      ></i>
+    </div>
     """
   end
 
@@ -590,14 +651,6 @@ defmodule ElixirChatWeb.ChatLive.Components do
   end
 
   def relative_time(datetime), do: Calendar.strftime(datetime, "%H:%M")
-
-  def message_snippet(body) do
-    normalized = String.replace(body, ~r/\s+/u, " ")
-
-    if String.length(normalized) > 160,
-      do: String.slice(normalized, 0, 160) <> "…",
-      else: normalized
-  end
 
   attr :body, :string, required: true
 

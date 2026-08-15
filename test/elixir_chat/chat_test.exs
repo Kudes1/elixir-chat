@@ -80,42 +80,6 @@ defmodule ElixirChat.ChatTest do
     assert Enum.map(newer, & &1.id) == Enum.map(Enum.drop(messages, 5), & &1.id)
   end
 
-  test "full-text search matches complete Russian and English words with cursor isolation", %{
-    scope: scope
-  } do
-    channel = channel_fixture(%{name: "fts-current"})
-    other = channel_fixture(%{name: "fts-other"})
-    _hidden = message_fixture(scope, other, %{body: "привет release hidden"})
-
-    messages =
-      for number <- 1..25 do
-        message_fixture(scope, channel, %{body: "привет release номер #{number}"})
-      end
-
-    assert {:ok, {first_page, true}} = Chat.search_messages(scope, channel.id, "привет", nil)
-    assert length(first_page) == 20
-
-    assert Enum.map(first_page, & &1.id) ==
-             messages |> Enum.reverse() |> Enum.take(20) |> Enum.map(& &1.id)
-
-    assert {:ok, {second_page, false}} =
-             Chat.search_messages(scope, channel.id, "release", List.last(first_page))
-
-    assert length(second_page) == 5
-    assert MapSet.disjoint?(MapSet.new(first_page, & &1.id), MapSet.new(second_page, & &1.id))
-    assert {:ok, {[], false}} = Chat.search_messages(scope, channel.id, "риве", nil)
-    assert {:ok, {[], false}} = Chat.search_messages(scope, channel.id, "hidden", nil)
-  end
-
-  test "message search and jump window do not expose another conversation", %{scope: scope} do
-    current = channel_fixture(%{name: "window-current"})
-    other = channel_fixture(%{name: "window-other"})
-    target = message_fixture(scope, other, %{body: "секретное совпадение"})
-
-    assert {:ok, {[], false}} = Chat.search_messages(scope, current.id, "секретное", nil)
-    assert {:error, :not_found} = Chat.message_window(scope, current.id, target.id)
-  end
-
   test "direct conversation cursor pagination has stable page boundaries", %{
     scope: scope,
     user: user
@@ -374,6 +338,117 @@ defmodule ElixirChat.ChatTest do
     assert {:error, :protected_channel} = Chat.archive_channel(scope, general)
     assert {:ok, updated} = Chat.update_channel(scope, general, %{description: "Новое описание"})
     assert updated.description == "Новое описание"
+  end
+
+  test "own messages can be deleted within the delete window", %{scope: scope} do
+    channel = channel_fixture(%{name: "delete-own"})
+    message = message_fixture(scope, channel, %{body: "Уйдёт"})
+
+    assert {:ok, deleted} = Chat.delete_message(scope, message.id)
+    assert deleted.id == message.id
+    refute Repo.get(Message, message.id)
+  end
+
+  test "own messages cannot be deleted after the delete window elapses", %{scope: scope} do
+    channel = channel_fixture(%{name: "delete-expired"})
+    message = message_fixture(scope, channel, %{body: "Просрочено"})
+
+    message
+    |> Ecto.Changeset.change(inserted_at: DateTime.add(DateTime.utc_now(:second), -600, :second))
+    |> Repo.update!()
+
+    assert {:error, :forbidden} = Chat.delete_message(scope, message.id)
+  end
+
+  test "other members cannot delete someone else's message", %{scope: scope} do
+    channel = channel_fixture(%{name: "delete-others"})
+    other = user_fixture(%{login: "delete.other", display_name: "Другой"})
+    message = message_fixture(Scope.for_user(other), channel, %{body: "Чужое"})
+
+    assert {:error, :forbidden} = Chat.delete_message(scope, message.id)
+  end
+
+  test "channel owner may delete any message in their channel regardless of age", %{
+    scope: owner_scope
+  } do
+    member = user_fixture(%{login: "delete.member", display_name: "Участник"})
+
+    assert {:ok, channel} =
+             Chat.create_channel(owner_scope, %{name: "owned-delete", kind: :public})
+
+    assert {:ok, _} = Chat.join_channel(Scope.for_user(member), channel.id)
+    message = message_fixture(Scope.for_user(member), channel, %{body: "Старое"})
+
+    message
+    |> Ecto.Changeset.change(inserted_at: DateTime.add(DateTime.utc_now(:second), -600, :second))
+    |> Repo.update!()
+
+    assert {:ok, _deleted} = Chat.delete_message(owner_scope, message.id)
+    refute Repo.get(Message, message.id)
+  end
+
+  test "direct conversation participants cannot delete each other's messages", %{scope: scope} do
+    other = user_fixture(%{login: "delete.direct.other", display_name: "Собеседник"})
+    assert {:ok, direct} = Chat.get_or_create_direct_conversation(scope, other.id)
+    assert {:ok, message} = Chat.create_message(scope, direct.channel, %{body: "Привет"})
+
+    assert {:error, :forbidden} = Chat.delete_message(Scope.for_user(other), message.id)
+    assert {:ok, _deleted} = Chat.delete_message(scope, message.id)
+    refute Repo.get(Message, message.id)
+  end
+
+  describe "can_delete_message?/3" do
+    test "matches delete_message/2 for the same own-message-within-window rule", %{
+      scope: scope,
+      user: user
+    } do
+      channel = channel_fixture(%{name: "predicate-own"})
+      message = message_fixture(scope, channel, %{body: "Сообщение"})
+
+      assert Chat.can_delete_message?(user, message, channel)
+    end
+
+    test "matches delete_message/2 for the expired-window rule", %{scope: scope, user: user} do
+      channel = channel_fixture(%{name: "predicate-expired"})
+      message = message_fixture(scope, channel, %{body: "Просрочено"})
+
+      message =
+        message
+        |> Ecto.Changeset.change(
+          inserted_at: DateTime.add(DateTime.utc_now(:second), -600, :second)
+        )
+        |> Repo.update!()
+
+      refute Chat.can_delete_message?(user, message, channel)
+    end
+
+    test "matches delete_message/2 for another member's message", %{user: user} do
+      channel = channel_fixture(%{name: "predicate-others"})
+      other = user_fixture(%{login: "predicate.other", display_name: "Другой"})
+      message = message_fixture(Scope.for_user(other), channel, %{body: "Чужое"})
+
+      refute Chat.can_delete_message?(user, message, channel)
+    end
+
+    test "matches delete_message/2 for the channel-owner override", %{scope: owner_scope} do
+      owner = owner_scope.user
+      member = user_fixture(%{login: "predicate.member", display_name: "Участник"})
+
+      assert {:ok, channel} =
+               Chat.create_channel(owner_scope, %{name: "predicate-owned", kind: :public})
+
+      assert {:ok, _} = Chat.join_channel(Scope.for_user(member), channel.id)
+      message = message_fixture(Scope.for_user(member), channel, %{body: "Старое"})
+
+      message =
+        message
+        |> Ecto.Changeset.change(
+          inserted_at: DateTime.add(DateTime.utc_now(:second), -600, :second)
+        )
+        |> Repo.update!()
+
+      assert Chat.can_delete_message?(owner, message, channel)
+    end
   end
 
   defp channel_fixture(attrs) do

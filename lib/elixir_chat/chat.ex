@@ -12,7 +12,7 @@ defmodule ElixirChat.Chat do
   @pubsub ElixirChat.PubSub
   @message_page_size 50
   @direct_page_size 50
-  @search_page_size 20
+  @delete_window :timer.minutes(5)
 
   def list_channels do
     Channel
@@ -497,43 +497,48 @@ defmodule ElixirChat.Chat do
     end
   end
 
-  def search_messages(%Scope{} = scope, channel_id, query, cursor \\ nil)
-      when is_binary(query) do
-    query = String.trim(query)
-
-    with true <- query != "",
-         {:ok, channel} <- readable_channel(scope, channel_id) do
-      messages =
-        channel.id
-        |> message_search_query(query, cursor)
-        |> limit(^(@search_page_size + 1))
-        |> Repo.all()
-
-      {:ok, {Enum.take(messages, @search_page_size), length(messages) > @search_page_size}}
-    else
-      false -> {:ok, {[], false}}
-      {:error, _} = error -> error
-    end
-  end
-
-  def message_window(%Scope{} = scope, channel_id, message_id, size \\ 150)
-      when is_integer(size) and size > 0 and size <= 150 do
-    with {:ok, channel} <- readable_channel(scope, channel_id),
-         {:ok, message_id} <- parse_id(message_id),
-         %Message{} = target <-
+  def get_message(id) do
+    with {:ok, message_id} <- parse_id(id),
+         %Message{} = message <-
            Repo.one(
-             Message
-             |> where([message], message.channel_id == ^channel.id and message.id == ^message_id)
-             |> preload([:channel, :user])
+             from message in Message,
+               where: message.id == ^message_id,
+               preload: [:channel, :user]
            ) do
-      before_size = div(size - 1, 2)
-      after_size = size - before_size - 1
-      {before, has_older?} = list_messages_before(channel.id, target, before_size)
-      {after_messages, has_newer?} = list_messages_after(channel.id, target, after_size)
-      {:ok, {before ++ [target] ++ after_messages, has_older?, has_newer?}}
+      {:ok, message}
     else
       _ -> {:error, :not_found}
     end
+  end
+
+  def delete_message(%Scope{user: user}, message_id) do
+    with {:ok, message} <- get_message(message_id),
+         :ok <- authorize_delete(message, message.channel, user),
+         {:ok, deleted} <- Repo.delete(message) do
+      broadcast_message_deleted(message.channel, deleted)
+      {:ok, deleted}
+    end
+  end
+
+  def delete_window, do: @delete_window
+
+  def can_delete_message?(%User{} = user, %Message{} = message, %Channel{} = channel) do
+    (own_message?(message, user) and within_delete_window?(message)) or
+      owner_override?(channel, user)
+  end
+
+  def own_message?(%Message{user_id: user_id}, %User{id: user_id}) when not is_nil(user_id),
+    do: true
+
+  def own_message?(_message, _user), do: false
+
+  def owner_override?(%Channel{purpose: :group, owner_id: owner_id}, %User{id: owner_id}),
+    do: true
+
+  def owner_override?(_channel, _user), do: false
+
+  def delete_deadline(%Message{inserted_at: inserted_at}) do
+    DateTime.add(inserted_at, @delete_window, :millisecond)
   end
 
   def subscribe(channel_id), do: Phoenix.PubSub.subscribe(@pubsub, topic(channel_id))
@@ -821,6 +826,30 @@ defmodule ElixirChat.Chat do
   defp require_owner(%Channel{owner_id: user_id}, user_id), do: :ok
   defp require_owner(_channel, _user_id), do: {:error, :forbidden}
 
+  defp authorize_delete(%Message{} = message, %Channel{} = channel, %User{} = user) do
+    if can_delete_message?(user, message, channel), do: :ok, else: {:error, :forbidden}
+  end
+
+  defp within_delete_window?(%Message{inserted_at: inserted_at}) do
+    DateTime.diff(DateTime.utc_now(), inserted_at, :millisecond) <= @delete_window
+  end
+
+  defp broadcast_message_deleted(%Channel{purpose: :group} = channel, message) do
+    Phoenix.PubSub.broadcast(@pubsub, topic(channel.id), {:message_deleted, message})
+  end
+
+  defp broadcast_message_deleted(%Channel{purpose: :direct} = channel, message) do
+    case direct_for_channel(channel.id) do
+      %DirectConversation{} = direct ->
+        broadcast_direct(direct, {:direct_message_deleted, direct, message})
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp direct_for_channel(channel_id), do: Repo.get_by(DirectConversation, channel_id: channel_id)
+
   defp protect_general_update(%Channel{is_general: false}, _attrs), do: :ok
 
   defp protect_general_update(%Channel{} = channel, attrs) do
@@ -872,40 +901,6 @@ defmodule ElixirChat.Chat do
     |> where([message], message.channel_id == ^channel_id)
     |> order_by([message], desc: message.inserted_at, desc: message.id)
     |> preload([:channel, :user])
-  end
-
-  defp message_search_query(channel_id, query, cursor) do
-    base =
-      from message in Message,
-        join: channel in assoc(message, :channel),
-        left_join: user in assoc(message, :user),
-        where:
-          message.channel_id == ^channel_id and
-            fragment(
-              "to_tsvector('simple', ?) @@ websearch_to_tsquery('simple', ?)",
-              message.body,
-              ^query
-            ),
-        order_by: [desc: message.inserted_at, desc: message.id],
-        preload: [channel: channel, user: user]
-
-    case cursor do
-      %Message{} = message ->
-        where(
-          base,
-          [message],
-          fragment(
-            "(?, ?) < (?, ?)",
-            message.inserted_at,
-            message.id,
-            ^message.inserted_at,
-            ^message.id
-          )
-        )
-
-      _ ->
-        base
-    end
   end
 
   defp direct_cursor_params(nil), do: {nil, nil}

@@ -36,6 +36,27 @@ defmodule ElixirChat.OnlineUsersTest do
     assert OnlineUsers.search("unicode.user", [], 20) == []
   end
 
+  test "online_ids/0 reflects Presence joins and leaves" do
+    id = System.unique_integer([:positive]) + 4_000_000
+    tab = start_supervised!({Agent, fn -> :ok end}, id: {:ids_tab, id})
+
+    refute MapSet.member?(OnlineUsers.online_ids(), id)
+
+    {:ok, _} =
+      Presence.track(tab, @topic, to_string(id), %{
+        id: id,
+        login: "ids.user",
+        display_name: "Идентификатор"
+      })
+
+    assert_receive {:online_count, _}
+    assert MapSet.member?(OnlineUsers.online_ids(), id)
+
+    :ok = Presence.untrack(tab, @topic, to_string(id))
+    assert_receive {:online_count, _}
+    refute MapSet.member?(OnlineUsers.online_ids(), id)
+  end
+
   test "rebuilds ETS from Presence after the cache restarts" do
     id = System.unique_integer([:positive]) + 2_000_000
     tab = start_supervised!({Agent, fn -> :ok end}, id: {:restart_tab, id})

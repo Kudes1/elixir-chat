@@ -13,7 +13,6 @@ defmodule ElixirChatWeb.ChatLive do
 
   @presence_topic "presence:lobby"
   @message_page_size 50
-  @message_window_size 150
 
   @impl true
   def mount(_params, _session, socket) do
@@ -21,6 +20,7 @@ defmodule ElixirChatWeb.ChatLive do
 
     if connected?(socket) do
       OnlineUsers.subscribe_count()
+      Phoenix.PubSub.subscribe(ElixirChat.PubSub, OnlineUsers.updates_topic())
       Chat.subscribe_user(user.id)
       Chat.subscribe_catalog()
 
@@ -49,6 +49,7 @@ defmodule ElixirChatWeb.ChatLive do
      |> assign(:subscribed_channel_id, nil)
      |> assign(:visitor_name, user.display_name)
      |> assign(:online_count, OnlineUsers.count())
+     |> assign(:online_user_ids, OnlineUsers.online_ids())
      |> assign(:message_form, empty_message_form())
      |> assign(:direct_search_form, direct_search_form())
      |> assign(:direct_search_results, [])
@@ -60,11 +61,6 @@ defmodule ElixirChatWeb.ChatLive do
      |> assign(:channel_memberships, [])
      |> assign(:invite_search_form, invite_search_form())
      |> assign(:invite_search_results, [])
-     |> assign(:message_search_open?, false)
-     |> assign(:message_search_form, message_search_form())
-     |> assign(:message_search_results, [])
-     |> assign(:message_search_cursor, nil)
-     |> assign(:message_search_has_more?, false)
      |> reset_message_assigns()
      |> stream(:messages, [])}
   end
@@ -313,6 +309,13 @@ defmodule ElixirChatWeb.ChatLive do
     {:noreply, push_event(socket, "insert_mention", %{mention: "@#{login}"})}
   end
 
+  def handle_event("delete_message", %{"message-id" => message_id}, socket) do
+    case Chat.delete_message(socket.assigns.current_scope, message_id) do
+      {:ok, _message} -> {:noreply, socket}
+      {:error, reason} -> {:noreply, put_flash(socket, :error, channel_error(reason))}
+    end
+  end
+
   def handle_event("load_older_messages", _params, socket) do
     case socket.assigns do
       %{channel: channel, has_older_messages?: true, oldest_message: %Message{} = oldest} ->
@@ -343,92 +346,29 @@ defmodule ElixirChatWeb.ChatLive do
     {:noreply, MessageWindow.load_latest_messages(socket)}
   end
 
-  def handle_event("open_message_search", _params, socket) do
-    {:noreply, assign(socket, :message_search_open?, true)}
-  end
-
-  def handle_event("close_message_search", _params, socket) do
-    {:noreply,
-     socket
-     |> assign(:message_search_open?, false)
-     |> assign(:message_search_form, message_search_form())
-     |> assign(:message_search_results, [])
-     |> assign(:message_search_cursor, nil)
-     |> assign(:message_search_has_more?, false)}
-  end
-
-  def handle_event("search_messages", %{"message_search" => %{"query" => query}}, socket) do
-    case Chat.search_messages(socket.assigns.current_scope, socket.assigns.channel.id, query, nil) do
-      {:ok, {messages, has_more?}} ->
-        {:noreply,
-         socket
-         |> assign(:message_search_form, message_search_form(query))
-         |> assign(:message_search_results, messages)
-         |> assign(:message_search_cursor, List.last(messages))
-         |> assign(:message_search_has_more?, has_more?)}
-
-      {:error, :not_found} ->
-        {:noreply, recover_from_missing_conversation(socket, conversation_kind(socket))}
-    end
-  end
-
-  def handle_event("load_more_message_results", _params, socket) do
-    query = socket.assigns.message_search_form[:query].value || ""
-
-    case Chat.search_messages(
-           socket.assigns.current_scope,
-           socket.assigns.channel.id,
-           query,
-           socket.assigns.message_search_cursor
-         ) do
-      {:ok, {messages, has_more?}} ->
-        {:noreply,
-         socket
-         |> update(:message_search_results, &(&1 ++ messages))
-         |> assign(
-           :message_search_cursor,
-           List.last(messages) || socket.assigns.message_search_cursor
-         )
-         |> assign(:message_search_has_more?, has_more?)}
-
-      {:error, :not_found} ->
-        {:noreply, recover_from_missing_conversation(socket, conversation_kind(socket))}
-    end
-  end
-
-  def handle_event("jump_to_message", %{"message-id" => message_id}, socket) do
-    case Chat.message_window(
-           socket.assigns.current_scope,
-           socket.assigns.channel.id,
-           message_id,
-           @message_window_size
-         ) do
-      {:ok, {messages, has_older?, has_newer?}} ->
-        target = Enum.find(messages, &(to_string(&1.id) == to_string(message_id)))
-
-        {:noreply,
-         socket
-         |> assign(:oldest_message, List.first(messages))
-         |> assign(:newest_message, List.last(messages))
-         |> assign(:message_count, length(messages))
-         |> assign(:has_older_messages?, has_older?)
-         |> assign(:has_newer_messages?, has_newer?)
-         |> assign(:at_latest?, !has_newer?)
-         |> assign(:pending_new_messages?, false)
-         |> assign(:highlighted_message_id, target && target.id)
-         |> assign(:message_search_open?, false)
-         |> stream(:messages, MessageWindow.message_items(messages), reset: true)
-         |> push_event("scroll_to_message", %{id: "messages-#{message_id}"})}
-
-      {:error, :not_found} ->
-        {:noreply, MessageWindow.load_latest_messages(socket)}
-    end
-  end
-
   @impl true
   def handle_info({:message_created, %Message{} = message}, socket) do
     if socket.assigns.channel && message.channel_id == socket.assigns.channel.id do
       {:noreply, MessageWindow.receive_message(socket, message)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:message_deleted, %Message{} = message}, socket) do
+    if socket.assigns.channel && message.channel_id == socket.assigns.channel.id do
+      {:noreply, MessageWindow.remove_message(socket, message)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info(
+        {:direct_message_deleted, %DirectConversation{} = direct, %Message{} = message},
+        socket
+      ) do
+    if socket.assigns.direct_conversation && socket.assigns.direct_conversation.id == direct.id do
+      {:noreply, MessageWindow.remove_message(socket, message)}
     else
       {:noreply, socket}
     end
@@ -475,6 +415,21 @@ defmodule ElixirChatWeb.ChatLive do
 
   def handle_info({:online_count, count}, socket) do
     {:noreply, assign(socket, :online_count, count)}
+  end
+
+  def handle_info({Presence, {:metas, key, metas}}, socket) do
+    case Integer.parse(key) do
+      {id, ""} ->
+        online_user_ids =
+          if metas == [],
+            do: MapSet.delete(socket.assigns.online_user_ids, id),
+            else: MapSet.put(socket.assigns.online_user_ids, id)
+
+        {:noreply, assign(socket, :online_user_ids, online_user_ids)}
+
+      :error ->
+        {:noreply, socket}
+    end
   end
 
   def handle_info({:user_presence_updated, user}, socket) do
@@ -657,17 +612,16 @@ defmodule ElixirChatWeb.ChatLive do
   defp channel_error(:forbidden), do: "Недостаточно прав для этого действия."
   defp channel_error(:not_member), do: "Пользователь не является участником канала."
   defp channel_error(:invalid_target), do: "Нельзя передать владение этому пользователю."
+  defp channel_error(:not_found), do: "Сообщение не найдено."
   defp channel_error(_reason), do: "Не удалось изменить канал."
 
   def empty_message_form, do: to_form(%{"body" => ""}, as: :message)
   defp direct_search_form(query \\ ""), do: to_form(%{"query" => query}, as: :direct_search)
   defp invite_search_form(query \\ ""), do: to_form(%{"query" => query}, as: :invite_search)
-  def message_search_form(query \\ ""), do: to_form(%{"query" => query}, as: :message_search)
 
   defp channel_form do
     %Channel{kind: :public, purpose: :group}
     |> Chat.change_channel()
     |> to_form()
   end
-
 end

@@ -40,30 +40,9 @@ defmodule ElixirChatWeb.ChatLiveTest do
     |> form("#message-form", message: %{body: "  Новое сообщение  "})
     |> render_submit()
 
-    assert has_element?(view, "#messages article p", "Новое сообщение")
+    assert has_element?(view, ".message-list article p", "Новое сообщение")
     assert [message] = Chat.list_messages(general.id)
     assert message.body == "Новое сообщение"
-  end
-
-  test "searches the current conversation and jumps to a highlighted message", %{
-    conn: conn,
-    general: general,
-    user: user
-  } do
-    {:ok, target} =
-      Chat.create_message(Scope.for_user(user), general, %{body: "Точное слово орбита"})
-
-    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
-    view |> element("#open-message-search") |> render_click()
-
-    view
-    |> form("#message-search-form", message_search: %{query: "орбита"})
-    |> render_submit()
-
-    assert has_element?(view, "#message-search-result-#{target.id}", "Точное слово орбита")
-    view |> element("#message-search-result-#{target.id}") |> render_click()
-    assert has_element?(view, "#messages-#{target.id}.message-highlighted")
-    refute has_element?(view, "#message-search-panel")
   end
 
   test "shows distinct logins beside identical display names", %{
@@ -222,6 +201,72 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert has_element?(view, "#messages-#{realtime_message.id}", "Новое в realtime")
     refute has_element?(view, "#jump-to-latest")
     refute has_element?(view, "#messages-#{List.first(messages).id}")
+  end
+
+  test "clears the new-messages banner once every message beyond the window is gone", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    for number <- 1..151 do
+      Chat.create_message(Scope.for_user(user), general, %{body: "История #{number}"})
+    end
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+    for _page <- 1..3, do: render_hook(view, "load_older_messages", %{})
+
+    # Loading all the way to the start evicts the window's newest boundary one
+    # message short of the real latest, leaving exactly one pre-existing
+    # message ("leftover") stranded beyond it.
+    [leftover] = Chat.list_messages(general.id) |> Enum.take(-1)
+
+    other_user = register_user(%{display_name: "Олег", login: "banner.watcher"})
+
+    {:ok, realtime_message} =
+      Chat.create_message(Scope.for_user(other_user), general, %{body: "Пропадёт"})
+
+    assert has_element?(view, "#jump-to-latest", "Новые сообщения")
+
+    Chat.delete_message(Scope.for_user(other_user), realtime_message.id)
+    render(view)
+
+    # The leftover message still exists beyond the window, so the banner is
+    # correctly still warranted.
+    assert has_element?(view, "#jump-to-latest")
+
+    Chat.delete_message(Scope.for_user(user), leftover.id)
+    render(view)
+
+    refute has_element?(view, "#jump-to-latest")
+  end
+
+  test "deleting a message the viewer never loaded does not corrupt the sliding window", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    for number <- 1..155 do
+      Chat.create_message(Scope.for_user(user), general, %{body: "Окно #{number}"})
+    end
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+    for _page <- 1..3, do: render_hook(view, "load_older_messages", %{})
+
+    other_user = register_user(%{display_name: "Олег", login: "window.watcher"})
+
+    {:ok, pending_message} =
+      Chat.create_message(Scope.for_user(other_user), general, %{body: "Никогда не увидят"})
+
+    assert has_element?(view, "#jump-to-latest", "Новые сообщения")
+    refute has_element?(view, "#messages-#{pending_message.id}")
+
+    Chat.delete_message(Scope.for_user(other_user), pending_message.id)
+    render(view)
+
+    render_hook(view, "load_newer_messages", %{})
+    render_hook(view, "load_older_messages", %{})
+
+    assert message_element_count(view) == 150
   end
 
   test "renders the redesigned localized sidebar and current user profile", %{
@@ -423,8 +468,8 @@ defmodule ElixirChatWeb.ChatLiveTest do
     |> render_submit()
 
     render(recipient_view)
-    assert has_element?(sender_view, "#messages article p", "Личное сообщение")
-    assert has_element?(recipient_view, "#messages article p", "Личное сообщение")
+    assert has_element?(sender_view, ".message-list article p", "Личное сообщение")
+    assert has_element?(recipient_view, ".message-list article p", "Личное сообщение")
     assert length(Chat.list_messages(direct.channel.id)) == 1
   end
 
@@ -445,7 +490,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     |> Repo.update!()
 
     {:ok, view, _html} = live(log_in_user(conn, user), ~p"/direct/#{direct.channel.public_id}")
-    assert has_element?(view, "#messages article p", "Старая история")
+    assert has_element?(view, ".message-list article p", "Старая история")
     assert has_element?(view, "#direct-recipient-disabled", "только для чтения")
     refute has_element?(view, "#message-form")
   end
@@ -583,6 +628,49 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert_receive {:DOWN, ^monitor, :process, _pid, _reason}
     assert_receive {:online_count, _}
     assert ElixirChat.OnlineUsers.search("новое имя", [], 20) == []
+  end
+
+  test "shows a live online status dot in the DM sidebar, dialog header, and channel members list",
+       %{conn: conn, user: user} do
+    other_user = register_user(%{display_name: "Олег", login: "oleg.status"})
+
+    {:ok, channel} =
+      Chat.create_channel(Scope.for_user(user), %{name: "status-room", kind: :public})
+
+    {:ok, _channel} = Chat.join_channel(Scope.for_user(other_user), channel.id)
+    {:ok, direct} = Chat.get_or_create_direct_conversation(Scope.for_user(user), other_user.id)
+
+    ElixirChat.OnlineUsers.subscribe_count()
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/direct/#{direct.channel.public_id}")
+
+    assert has_element?(view, "#direct-conversation-#{direct.id} .avatar-status-dot")
+    refute has_element?(view, "#direct-conversation-#{direct.id} .avatar-status-dot--online")
+    assert has_element?(view, ".direct-heading .avatar-status-dot")
+    refute has_element?(view, ".direct-heading .avatar-status-dot--online")
+
+    view |> element("#channel-#{channel.id}") |> render_click()
+    view |> element("#open-channel-settings") |> render_click()
+    assert has_element?(view, "#channel-member-#{other_user.id} .avatar-status-dot")
+    refute has_element?(view, "#channel-member-#{other_user.id} .avatar-status-dot--online")
+
+    other_conn = log_in_user(Phoenix.ConnTest.build_conn(), other_user)
+    {:ok, other_view, _html} = live(other_conn, ~p"/channels/#{channel.public_id}")
+    assert_receive {:online_count, _}
+
+    wait_until(fn ->
+      has_element?(view, "#channel-member-#{other_user.id} .avatar-status-dot--online")
+    end)
+
+    view |> element("#direct-conversation-#{direct.id}") |> render_click()
+    assert has_element?(view, "#direct-conversation-#{direct.id} .avatar-status-dot--online")
+    assert has_element?(view, ".direct-heading .avatar-status-dot--online")
+
+    GenServer.stop(other_view.pid)
+    assert_receive {:online_count, _}
+
+    wait_until(fn ->
+      not has_element?(view, "#direct-conversation-#{direct.id} .avatar-status-dot--online")
+    end)
   end
 
   test "creates a private channel from the accessible catalog", %{
@@ -736,11 +824,157 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert Repo.get!(Channel, channel.id).archived_at
   end
 
+  test "author can delete their own recent message", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, message} = Chat.create_message(Scope.for_user(user), general, %{body: "Удалю"})
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    assert has_element?(view, "#message-menu-toggle-#{message.id}")
+    assert has_element?(view, "#delete-message-#{message.id}", "Удалить")
+
+    view |> element("#delete-message-#{message.id}") |> render_click()
+
+    refute has_element?(view, "#messages-#{message.id}")
+    refute Repo.get(Message, message.id)
+  end
+
+  test "the delete action carries a client-side expiry only when it is time-limited", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, message} = Chat.create_message(Scope.for_user(user), general, %{body: "Скоро истечёт"})
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    actions =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#message-actions-#{message.id}")
+
+    assert LazyHTML.attribute(actions, "phx-hook") == ["MessageDeleteWindow"]
+    [deadline] = LazyHTML.attribute(actions, "data-delete-deadline")
+
+    expected =
+      message.inserted_at
+      |> DateTime.add(Chat.delete_window(), :millisecond)
+      |> DateTime.to_unix(:millisecond)
+
+    assert_in_delta String.to_integer(deadline), expected, 2_000
+  end
+
+  test "the channel owner's permanent delete action carries no client-side expiry", %{
+    conn: conn,
+    user: owner
+  } do
+    member = register_user(%{display_name: "Участник", login: "no-expiry.member"})
+
+    assert {:ok, channel} =
+             Chat.create_channel(Scope.for_user(owner), %{name: "no-expiry-owned", kind: :public})
+
+    assert {:ok, _} = Chat.join_channel(Scope.for_user(member), channel.id)
+    {:ok, message} = Chat.create_message(Scope.for_user(member), channel, %{body: "Старое"})
+
+    message
+    |> Ecto.Changeset.change(inserted_at: DateTime.add(DateTime.utc_now(:second), -600, :second))
+    |> Repo.update!()
+
+    {:ok, view, _html} = live(log_in_user(conn, owner), ~p"/channels/#{channel.public_id}")
+
+    actions =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#message-actions-#{message.id}")
+
+    assert has_element?(view, "#delete-message-#{message.id}")
+    assert LazyHTML.attribute(actions, "phx-hook") == []
+    assert LazyHTML.attribute(actions, "data-delete-deadline") == []
+  end
+
+  test "the actions menu is hidden for someone else's message", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    other_user = register_user(%{display_name: "Олег", login: "delete.viewer"})
+    {:ok, message} = Chat.create_message(Scope.for_user(other_user), general, %{body: "Чужое"})
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+    refute has_element?(view, "#message-menu-toggle-#{message.id}")
+    refute has_element?(view, "#delete-message-#{message.id}")
+  end
+
+  test "channel owner can delete another member's message in their channel", %{
+    conn: conn,
+    user: owner
+  } do
+    member = register_user(%{display_name: "Участник", login: "delete.member"})
+
+    assert {:ok, channel} =
+             Chat.create_channel(Scope.for_user(owner), %{
+               name: "owned-delete-live",
+               kind: :public
+             })
+
+    assert {:ok, _} = Chat.join_channel(Scope.for_user(member), channel.id)
+
+    {:ok, message} =
+      Chat.create_message(Scope.for_user(member), channel, %{body: "Сообщение участника"})
+
+    {:ok, view, _html} = live(log_in_user(conn, owner), ~p"/channels/#{channel.public_id}")
+    assert has_element?(view, "#delete-message-#{message.id}")
+
+    view |> element("#delete-message-#{message.id}") |> render_click()
+    refute has_element?(view, "#messages-#{message.id}")
+    refute Repo.get(Message, message.id)
+  end
+
+  test "deleting a message removes it for other viewers in real time", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    other_user = register_user(%{display_name: "Олег", login: "delete.watcher"})
+    {:ok, message} = Chat.create_message(Scope.for_user(user), general, %{body: "Всем видно"})
+
+    {:ok, author_view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    {:ok, watcher_view, _html} =
+      live(log_in_user(build_conn(), other_user), ~p"/channels/#{general.public_id}")
+
+    author_view |> element("#delete-message-#{message.id}") |> render_click()
+
+    render(watcher_view)
+    refute has_element?(watcher_view, "#messages-#{message.id}")
+  end
+
+  test "deleting the first message of a group re-groups the remaining message under its own author",
+       %{conn: conn, general: general, user: user} do
+    other_user = register_user(%{display_name: "Олег", login: "regroup.other"})
+    {:ok, _greeting} = Chat.create_message(Scope.for_user(other_user), general, %{body: "Привет"})
+    {:ok, first} = Chat.create_message(Scope.for_user(user), general, %{body: "Первое"})
+    {:ok, second} = Chat.create_message(Scope.for_user(user), general, %{body: "Второе"})
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+    assert has_element?(view, "#messages-#{second.id}.message-continuation")
+
+    view |> element("#delete-message-#{first.id}") |> render_click()
+
+    refute has_element?(view, "#messages-#{first.id}")
+    refute has_element?(view, "#messages-#{second.id}.message-continuation")
+    assert has_element?(view, "#messages-#{second.id} .message-avatar")
+    assert has_element?(view, "#message-login-#{second.id}", "@#{user.login}")
+  end
+
   defp message_element_count(view) do
     view
     |> render()
     |> LazyHTML.from_fragment()
-    |> LazyHTML.query("#messages article")
+    |> LazyHTML.query(".message-list article")
     |> Enum.count()
   end
 
@@ -764,5 +998,19 @@ defmodule ElixirChatWeb.ChatLiveTest do
     |> LazyHTML.from_fragment()
     |> LazyHTML.query("#direct-conversation-list > a.selected")
     |> Enum.count()
+  end
+
+  defp wait_until(fun, attempts \\ 20) do
+    cond do
+      fun.() ->
+        :ok
+
+      attempts <= 1 ->
+        flunk("condition not met in time")
+
+      true ->
+        Process.sleep(15)
+        wait_until(fun, attempts - 1)
+    end
   end
 end

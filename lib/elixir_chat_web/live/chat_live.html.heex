@@ -11,6 +11,7 @@
       channel_catalog_open?={@channel_catalog_open?}
       current_user={@current_scope.user}
       visitor_name={@visitor_name}
+      online_user_ids={@online_user_ids}
     />
     <button
       id="sidebar-overlay"
@@ -35,57 +36,12 @@
         other_user={@current_other_user}
         online_count={@online_count}
         current_user={@current_scope.user}
+        online_user_ids={@online_user_ids}
       />
-
-      <section :if={@message_search_open?} id="message-search-panel" class="message-search-panel">
-        <header>
-          <strong>Поиск в разговоре</strong>
-          <button
-            id="close-message-search"
-            type="button"
-            phx-click="close_message_search"
-            aria-label="Закрыть поиск"
-          >
-            <.icon name="hero-x-mark" class="size-4" />
-          </button>
-        </header>
-        <.form for={@message_search_form} id="message-search-form" phx-submit="search_messages">
-          <.input
-            field={@message_search_form[:query]}
-            id="message-search-query"
-            type="search"
-            label="Слова в сообщении"
-            autocomplete="off"
-          />
-          <button id="submit-message-search" type="submit">Найти</button>
-        </.form>
-        <div id="message-search-results" class="message-search-results">
-          <button
-            :for={message <- @message_search_results}
-            id={"message-search-result-#{message.id}"}
-            type="button"
-            phx-click="jump_to_message"
-            phx-value-message-id={message.id}
-          >
-            <span><strong>{message.author_name}</strong><time>{Calendar.strftime(
-              message.inserted_at,
-              "%d.%m.%Y %H:%M"
-            )}</time></span>
-            <p>{message_snippet(message.body)}</p>
-          </button>
-          <p :if={@message_search_results == []}>Совпадений нет</p>
-        </div>
-        <button
-          :if={@message_search_has_more?}
-          id="load-more-message-results"
-          type="button"
-          phx-click="load_more_message_results"
-        >Показать ещё</button>
-      </section>
 
       <div class="message-window">
         <div
-          id="messages"
+          id={"message-list-#{@channel.id}"}
           class="message-list"
           phx-update="stream"
           phx-hook="MessageList"
@@ -97,7 +53,8 @@
           <.message
             :for={{_dom_id, item} <- @streams.messages}
             item={item}
-            highlighted_message_id={@highlighted_message_id}
+            current_user={@current_scope.user}
+            channel={@channel}
           />
         </div>
         <button
@@ -144,6 +101,7 @@
       memberships={@channel_memberships}
       invite_form={@invite_search_form}
       invite_results={@invite_search_results}
+      online_user_ids={@online_user_ids}
     />
   </main>
 </Layouts.app>

@@ -11,6 +11,7 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
       stream: 4,
       stream_insert: 3,
       stream_insert: 4,
+      stream_delete: 3,
       push_event: 3
     ]
 
@@ -42,11 +43,6 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
     )
     |> assign(:subscribed_channel_id, new_channel_id)
     |> assign(:message_form, ChatLive.empty_message_form())
-    |> assign(:message_search_open?, false)
-    |> assign(:message_search_form, ChatLive.message_search_form())
-    |> assign(:message_search_results, [])
-    |> assign(:message_search_cursor, nil)
-    |> assign(:message_search_has_more?, false)
     |> load_latest_messages()
   end
 
@@ -64,7 +60,6 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
     |> assign(:has_newer_messages?, false)
     |> assign(:at_latest?, true)
     |> assign(:pending_new_messages?, false)
-    |> assign(:highlighted_message_id, nil)
     |> stream(:messages, message_items(messages), reset: true)
     |> push_event("scroll_to_latest", %{})
   end
@@ -97,6 +92,97 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
       limit: -@message_window_size
     )
     |> reset_first_message_group(new_oldest, overflow)
+  end
+
+  def remove_message(socket, %Message{} = message) do
+    in_window? = within_loaded_window?(socket, message)
+    original_newest = socket.assigns.newest_message
+
+    {next, previous} =
+      if in_window? do
+        {next_message(socket, message), previous_message(socket, message)}
+      else
+        {nil, nil}
+      end
+
+    socket
+    |> maybe_decrement_message_count(in_window?)
+    |> replace_oldest_if_removed(message, next)
+    |> replace_newest_if_removed(message, previous)
+    |> stream_delete(:messages, %{id: message.id})
+    |> regroup_next(next, previous)
+    |> reconcile_pending_after_removal(message, original_newest)
+  end
+
+  defp maybe_decrement_message_count(socket, true),
+    do: assign(socket, :message_count, max(socket.assigns.message_count - 1, 0))
+
+  defp maybe_decrement_message_count(socket, false), do: socket
+
+  defp reconcile_pending_after_removal(socket, %Message{id: id}, %Message{id: id}), do: socket
+
+  defp reconcile_pending_after_removal(socket, message, %Message{} = original_newest) do
+    if cursor_lte?(original_newest, message) do
+      {after_newest, _has_more?} =
+        fetch_messages_after(socket, socket.assigns.channel.id, original_newest, 1)
+
+      assign(socket, :pending_new_messages?, after_newest != [])
+    else
+      socket
+    end
+  end
+
+  defp reconcile_pending_after_removal(socket, _message, nil), do: socket
+
+  defp regroup_next(socket, nil, _previous), do: socket
+
+  defp regroup_next(socket, next, previous),
+    do: stream_insert(socket, :messages, message_item(next, previous))
+
+  defp replace_oldest_if_removed(socket, %Message{id: id}, replacement) do
+    case socket.assigns.oldest_message do
+      %Message{id: ^id} -> assign(socket, :oldest_message, replacement)
+      _ -> socket
+    end
+  end
+
+  defp replace_newest_if_removed(socket, %Message{id: id}, replacement) do
+    case socket.assigns.newest_message do
+      %Message{id: ^id} -> assign(socket, :newest_message, replacement)
+      _ -> socket
+    end
+  end
+
+  defp within_loaded_window?(socket, %Message{} = candidate) do
+    case {socket.assigns.oldest_message, socket.assigns.newest_message} do
+      {%Message{} = oldest, %Message{} = newest} ->
+        cursor_lte?(oldest, candidate) and cursor_lte?(candidate, newest)
+
+      _ ->
+        false
+    end
+  end
+
+  defp cursor_lte?(%Message{inserted_at: at_a, id: id_a}, %Message{inserted_at: at_b, id: id_b}) do
+    case DateTime.compare(at_a, at_b) do
+      :lt -> true
+      :gt -> false
+      :eq -> id_a <= id_b
+    end
+  end
+
+  defp next_message(socket, message) do
+    case fetch_messages_after(socket, socket.assigns.channel.id, message, 1) do
+      {[next], _has_more?} -> next
+      {[], _has_more?} -> nil
+    end
+  end
+
+  defp previous_message(socket, message) do
+    case fetch_messages_before(socket, socket.assigns.channel.id, message, 1) do
+      {[previous], _has_more?} -> previous
+      {[], _has_more?} -> nil
+    end
   end
 
   def prepend_messages(socket, [], _oldest, has_older_messages?) do
