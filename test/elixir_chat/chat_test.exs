@@ -3,7 +3,16 @@ defmodule ElixirChat.ChatTest do
 
   alias ElixirChat.Chat
   alias ElixirChat.Accounts.{Scope, User}
-  alias ElixirChat.Chat.{Channel, ChannelMembership, DirectConversation, Message, OutboxEvent}
+
+  alias ElixirChat.Chat.{
+    Channel,
+    ChannelMembership,
+    ConversationRead,
+    DirectConversation,
+    Message,
+    OutboxEvent
+  }
+
   alias ElixirChat.Repo
 
   setup do
@@ -166,7 +175,7 @@ defmodule ElixirChat.ChatTest do
         assert {:ok, _} = Chat.create_message(scope, group, %{body: "Два запроса"})
       end)
 
-    assert length(group_events) <= 12, inspect(group_events)
+    assert length(group_events) <= 13, inspect(group_events)
 
     direct_events =
       count_repo_events(fn ->
@@ -622,6 +631,97 @@ defmodule ElixirChat.ChatTest do
       message = message_fixture(Scope.for_user(member), channel, %{body: "Сообщение"})
 
       refute Chat.can_edit_message?(owner, message)
+    end
+  end
+
+  describe "unread conversation state" do
+    test "counts only other users' messages and supports group and direct conversations", %{
+      scope: scope,
+      user: user
+    } do
+      other = user_fixture(%{login: "unread.other", display_name: "Другой"})
+      other_scope = Scope.for_user(other)
+      channel = channel_fixture(%{name: "unread-group"})
+
+      _own = message_fixture(scope, channel, %{body: "Своё"})
+      group_message = message_fixture(other_scope, channel, %{body: "Чужое"})
+
+      assert %{channel.id => 1} == Chat.list_unread_counts(scope, [channel.id])
+      assert {:ok, 0} = Chat.mark_conversation_read(scope, channel.id, group_message.id)
+
+      assert {:ok, direct} = Chat.get_or_create_direct_conversation(scope, other.id)
+      direct_message = message_fixture(other_scope, direct.channel, %{body: "Личное"})
+
+      assert %{direct.channel_id => 1} ==
+               Chat.list_unread_counts(scope, [direct.channel_id])
+
+      assert {:ok, 0} =
+               Chat.mark_conversation_read(scope, direct.channel_id, direct_message.id)
+
+      assert Repo.get_by!(ConversationRead, user_id: user.id, channel_id: direct.channel_id)
+    end
+
+    test "read cursor is monotonic and survives deletion of its boundary", %{scope: scope} do
+      other = user_fixture(%{login: "cursor.other", display_name: "Другой"})
+      other_scope = Scope.for_user(other)
+      channel = channel_fixture(%{name: "unread-cursor"})
+      first = message_fixture(other_scope, channel, %{body: "Первое"})
+      second = message_fixture(other_scope, channel, %{body: "Второе"})
+
+      assert {:ok, 0} = Chat.mark_conversation_read(scope, channel.id, second.id)
+      assert {:ok, 0} = Chat.mark_conversation_read(scope, channel.id, first.id)
+
+      assert {:ok, _deleted} = Chat.delete_message(other_scope, second.id)
+      assert %{channel.id => 0} == Chat.list_unread_counts(scope, [channel.id])
+
+      _third = message_fixture(other_scope, channel, %{body: "Третье"})
+      assert %{channel.id => 1} == Chat.list_unread_counts(scope, [channel.id])
+    end
+
+    test "deleting an unread message reduces the count", %{scope: scope} do
+      other = user_fixture(%{login: "delete.unread", display_name: "Другой"})
+      other_scope = Scope.for_user(other)
+      channel = channel_fixture(%{name: "unread-delete"})
+      message = message_fixture(other_scope, channel, %{body: "Удалить"})
+
+      assert %{channel.id => 1} == Chat.list_unread_counts(scope, [channel.id])
+      assert {:ok, _deleted} = Chat.delete_message(other_scope, message.id)
+      assert %{channel.id => 0} == Chat.list_unread_counts(scope, [channel.id])
+    end
+
+    test "joining and rejoining starts at the latest existing message", %{scope: owner_scope} do
+      member = user_fixture(%{login: "joining.reader", display_name: "Участник"})
+      member_scope = Scope.for_user(member)
+
+      assert {:ok, channel} =
+               Chat.create_channel(owner_scope, %{name: "unread-membership", kind: :public})
+
+      _old = message_fixture(owner_scope, channel, %{body: "До вступления"})
+      assert {:ok, ^channel} = Chat.join_channel(member_scope, channel.id)
+      assert %{channel.id => 0} == Chat.list_unread_counts(member_scope, [channel.id])
+
+      _new = message_fixture(owner_scope, channel, %{body: "После вступления"})
+      assert %{channel.id => 1} == Chat.list_unread_counts(member_scope, [channel.id])
+
+      assert {:ok, ^channel} = Chat.leave_channel(member_scope, channel.id)
+      refute Repo.get_by(ConversationRead, user_id: member.id, channel_id: channel.id)
+      assert {:ok, ^channel} = Chat.join_channel(member_scope, channel.id)
+      assert %{channel.id => 0} == Chat.list_unread_counts(member_scope, [channel.id])
+    end
+
+    test "a user without access cannot inspect or advance read state", %{scope: owner_scope} do
+      outsider = user_fixture(%{login: "unread.outsider", display_name: "Посторонний"})
+      outsider_scope = Scope.for_user(outsider)
+
+      assert {:ok, channel} =
+               Chat.create_channel(owner_scope, %{name: "unread-private", kind: :private})
+
+      message = message_fixture(owner_scope, channel, %{body: "Секрет"})
+
+      assert %{} == Chat.list_unread_counts(outsider_scope, [channel.id])
+
+      assert {:error, :not_found} =
+               Chat.mark_conversation_read(outsider_scope, channel.id, message.id)
     end
   end
 

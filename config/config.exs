@@ -7,6 +7,8 @@
 # General application configuration
 import Config
 
+config :elixir, :time_zone_database, Zoneinfo.TimeZoneDatabase
+
 config :elixir_chat,
   ecto_repos: [ElixirChat.Repo],
   generators: [timestamp_type: :utc_datetime]

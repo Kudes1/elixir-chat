@@ -145,6 +145,26 @@ const MessageList = {
     this.loadingOlderMessages = false
     this.loadingNewerMessages = false
     this.previousScrollHeight = null
+    this.lastMarkedMessageId = null
+    this.markConversationRead = () => {
+      const distanceFromBottom = this.el.scrollHeight - this.el.clientHeight - this.el.scrollTop
+      const messageId = this.el.dataset.newestMessageId
+
+      if (document.visibilityState !== "visible" ||
+          !document.hasFocus() ||
+          this.el.dataset.atLatest !== "true" ||
+          distanceFromBottom > 80 ||
+          !messageId ||
+          messageId === this.lastMarkedMessageId) return
+
+      this.lastMarkedMessageId = messageId
+      this.pushEvent("mark_conversation_read", {
+        channel_id: this.el.dataset.channelId,
+        message_id: messageId,
+      }, reply => {
+        if (reply?.error) this.lastMarkedMessageId = null
+      })
+    }
     this.scrollToLatest = behavior => {
       this.el.scrollTo({top: this.el.scrollHeight, behavior})
     }
@@ -167,14 +187,23 @@ const MessageList = {
     this.handleScroll = () => {
       this.loadOlderMessages()
       this.loadNewerMessages()
+      this.markConversationRead()
     }
 
+    this.handleVisibilityChange = () => this.markConversationRead()
+    this.handleWindowFocus = () => this.markConversationRead()
+
     this.el.addEventListener("scroll", this.handleScroll)
+    document.addEventListener("visibilitychange", this.handleVisibilityChange)
+    window.addEventListener("focus", this.handleWindowFocus)
     this.handleEvent("message_sent", () => {
       this.scrollToLatest("smooth")
     })
     this.handleEvent("scroll_to_latest", () => {
       this.scrollToLatest("auto")
+      requestAnimationFrame(() => {
+        this.markConversationRead()
+      })
     })
     this.handleEvent("older_messages_loaded", () => {
       if (this.previousScrollHeight !== null) {
@@ -186,15 +215,26 @@ const MessageList = {
     })
     this.handleEvent("newer_messages_loaded", () => {
       this.loadingNewerMessages = false
+      requestAnimationFrame(() => {
+        this.markConversationRead()
+      })
     })
-    requestAnimationFrame(() => this.scrollToLatest("auto"))
+    requestAnimationFrame(() => {
+      this.scrollToLatest("auto")
+      this.markConversationRead()
+    })
   },
   updated() {
     this.loadingOlderMessages = false
     this.loadingNewerMessages = false
+    requestAnimationFrame(() => {
+      this.markConversationRead()
+    })
   },
   destroyed() {
     this.el.removeEventListener("scroll", this.handleScroll)
+    document.removeEventListener("visibilitychange", this.handleVisibilityChange)
+    window.removeEventListener("focus", this.handleWindowFocus)
   },
 }
 
@@ -444,7 +484,10 @@ const MessageEditWindow = {
 
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
-  params: {_csrf_token: csrfToken},
+  params: () => ({
+    _csrf_token: csrfToken,
+    time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  }),
   hooks: {
     ...colocatedHooks,
     MessageComposer,

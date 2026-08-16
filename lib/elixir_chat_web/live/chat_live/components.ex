@@ -1,6 +1,8 @@
 defmodule ElixirChatWeb.ChatLive.Components do
   use ElixirChatWeb, :html
 
+  alias ElixirChatWeb.ChatLive.MessageTime
+
   attr :channels, :list, required: true
   attr :channel, :any, required: true
   attr :direct_conversation_id, :integer, default: nil
@@ -13,6 +15,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
   attr :current_user, :any, required: true
   attr :visitor_name, :string, required: true
   attr :online_user_ids, :any, required: true
+  attr :unread_counts, :map, required: true
 
   def sidebar(assigns) do
     ~H"""
@@ -77,6 +80,12 @@ defmodule ElixirChatWeb.ChatLive.Components do
               phx-click={close_sidebar()}
             >
               <span aria-hidden="true">#</span><span class="channel-name">{channel.name}</span>
+              <span
+                :if={Map.get(@unread_counts, channel.id, 0) > 0}
+                id={"channel-unread-#{channel.id}"}
+                class="unread-badge"
+                aria-label={unread_label(Map.get(@unread_counts, channel.id, 0))}
+              >{format_unread_count(Map.get(@unread_counts, channel.id, 0))}</span>
             </.link>
           </div>
         </section>
@@ -172,6 +181,12 @@ defmodule ElixirChatWeb.ChatLive.Components do
                   <strong>{item.other_user.display_name}</strong>
                   <small>@{item.other_user.login}<span :if={item.other_user.disabled_at}> · отключён</span></small>
                 </span>
+                <span
+                  :if={Map.get(@unread_counts, item.direct.channel_id, 0) > 0}
+                  id={"direct-unread-#{item.id}"}
+                  class="unread-badge"
+                  aria-label={unread_label(Map.get(@unread_counts, item.direct.channel_id, 0))}
+                >{format_unread_count(Map.get(@unread_counts, item.direct.channel_id, 0))}</span>
               </.link>
             </div>
             <p class="direct-list-empty">Пока нет личных диалогов</p>
@@ -194,6 +209,11 @@ defmodule ElixirChatWeb.ChatLive.Components do
     </aside>
     """
   end
+
+  defp format_unread_count(count) when count > 99, do: "99+"
+  defp format_unread_count(count), do: Integer.to_string(count)
+
+  defp unread_label(count), do: "Непрочитанных сообщений: #{count}"
 
   attr :channel, :any, required: true
   attr :other_user, :any, default: nil
@@ -534,7 +554,11 @@ defmodule ElixirChatWeb.ChatLive.Components do
     ~H"""
     <article
       id={"messages-#{@item.id}"}
-      class={["message", @item.continuation? && "message-continuation"]}
+      class={[
+        "message",
+        @item.continuation? && "message-continuation",
+        @item.starts_new_day? && "message-day-start"
+      ]}
       phx-remove={
         JS.hide(
           transition: {"message-remove-transition", "message-remove-start", "message-remove-end"},
@@ -542,15 +566,27 @@ defmodule ElixirChatWeb.ChatLive.Components do
         )
       }
     >
+      <div
+        :if={@item.starts_new_day?}
+        id={"message-date-#{@item.id}"}
+        class="message-date-divider"
+        role="separator"
+        aria-label={"Дата: #{@item.date_label}"}
+      >
+        <span>{@item.date_label}</span>
+      </div>
       <.user_avatar
         :if={!@item.continuation?}
         name={@item.message.author_name}
         user_id={@item.message.user_id}
         class="message-avatar"
       />
-      <time :if={@item.continuation?} class="message-continuation-time">{relative_time(
-        @item.message.inserted_at
-      )}</time>
+      <time
+        :if={@item.continuation?}
+        class="message-continuation-time"
+        datetime={DateTime.to_iso8601(@item.message.inserted_at)}
+        title={MessageTime.full_datetime_label(@item.local_datetime)}
+      >{MessageTime.time_label(@item.local_datetime)}</time>
       <div class="message-content">
         <div :if={!@item.continuation?} class="message-meta">
           <strong>{@item.message.author_name}</strong>
@@ -563,7 +599,10 @@ defmodule ElixirChatWeb.ChatLive.Components do
             phx-value-login={@item.message.user.login}
             aria-label={"Упомянуть @#{@item.message.user.login}"}
           >@{@item.message.user.login}</button>
-          <span class="message-meta-separator">·</span><time>{relative_time(@item.message.inserted_at)}</time>
+          <span class="message-meta-separator">·</span><time
+            datetime={DateTime.to_iso8601(@item.message.inserted_at)}
+            title={MessageTime.full_datetime_label(@item.local_datetime)}
+          >{MessageTime.time_label(@item.local_datetime)}</time>
           <span
             :if={@item.message.updated_at != @item.message.inserted_at}
             class="message-edited-badge"
@@ -740,8 +779,6 @@ defmodule ElixirChatWeb.ChatLive.Components do
     |> String.slice(0, 2)
     |> String.upcase()
   end
-
-  def relative_time(datetime), do: Calendar.strftime(datetime, "%H:%M")
 
   attr :body, :string, required: true
   attr :edited, :boolean, default: false

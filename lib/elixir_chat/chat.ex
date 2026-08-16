@@ -6,7 +6,16 @@ defmodule ElixirChat.Chat do
   alias Ecto.Multi
   alias ElixirChat.Accounts
   alias ElixirChat.Accounts.{Scope, User}
-  alias ElixirChat.Chat.{Channel, ChannelMembership, DirectConversation, Message, Outbox}
+
+  alias ElixirChat.Chat.{
+    Channel,
+    ChannelMembership,
+    ConversationRead,
+    DirectConversation,
+    Message,
+    Outbox
+  }
+
   alias ElixirChat.Repo
 
   @pubsub ElixirChat.PubSub
@@ -97,6 +106,9 @@ defmodule ElixirChat.Chat do
         user_id: user.id
       })
     end)
+    |> Multi.run(:conversation_read, fn repo, %{channel: channel} ->
+      initialize_read_cursor(repo, user.id, channel.id)
+    end)
     |> Repo.transaction()
     |> case do
       {:ok, %{channel: channel}} ->
@@ -154,6 +166,7 @@ defmodule ElixirChat.Chat do
              })
            ) do
         {:ok, _membership} ->
+          {:ok, _read} = initialize_read_cursor(Repo, user.id, channel.id)
           channel
 
         {:error, changeset} ->
@@ -177,8 +190,13 @@ defmodule ElixirChat.Chat do
 
         true ->
           case Repo.get_by(ChannelMembership, channel_id: channel.id, user_id: user.id) do
-            nil -> Repo.rollback(:not_member)
-            membership -> Repo.delete!(membership) && channel
+            nil ->
+              Repo.rollback(:not_member)
+
+            membership ->
+              Repo.delete!(membership)
+              delete_read_cursor(Repo, user.id, channel.id)
+              channel
           end
       end
     end)
@@ -200,8 +218,12 @@ defmodule ElixirChat.Chat do
                  user_id: target.id
                })
              ) do
-          {:ok, _} -> channel
-          {:error, _} -> Repo.rollback(:already_member)
+          {:ok, _} ->
+            {:ok, _read} = initialize_read_cursor(Repo, target.id, channel.id)
+            channel
+
+          {:error, _} ->
+            Repo.rollback(:already_member)
         end
       end)
       |> after_membership_result(target_id)
@@ -223,8 +245,13 @@ defmodule ElixirChat.Chat do
 
           true ->
             case Repo.get_by(ChannelMembership, channel_id: channel.id, user_id: target_id) do
-              nil -> Repo.rollback(:not_member)
-              membership -> Repo.delete!(membership) && channel
+              nil ->
+                Repo.rollback(:not_member)
+
+              membership ->
+                Repo.delete!(membership)
+                delete_read_cursor(Repo, target_id, channel.id)
+                channel
             end
         end
       end)
@@ -435,6 +462,72 @@ defmodule ElixirChat.Chat do
     end
   end
 
+  @doc "Returns unread counts for the requested conversations the user can access."
+  def list_unread_counts(%Scope{user: user} = scope, channel_ids) when is_list(channel_ids) do
+    ids =
+      channel_ids
+      |> Enum.map(&parse_id/1)
+      |> Enum.flat_map(fn
+        {:ok, id} -> [id]
+        :error -> []
+      end)
+      |> Enum.uniq()
+      |> accessible_channel_ids(scope)
+
+    counts =
+      Repo.all(
+        from message in Message,
+          left_join: read in ConversationRead,
+          on: read.channel_id == message.channel_id and read.user_id == ^user.id,
+          where: message.channel_id in ^ids and message.user_id != ^user.id,
+          where:
+            is_nil(read.id) or is_nil(read.last_read_at) or
+              fragment(
+                "(?, ?) > (?, ?)",
+                message.inserted_at,
+                message.id,
+                read.last_read_at,
+                read.last_read_message_id
+              ),
+          group_by: message.channel_id,
+          select: {message.channel_id, count(message.id)}
+      )
+      |> Map.new()
+
+    Map.new(ids, &{&1, Map.get(counts, &1, 0)})
+  end
+
+  @doc "Monotonically advances a conversation's read cursor and returns its unread remainder."
+  def mark_conversation_read(%Scope{user: user} = scope, channel_id, message_or_id) do
+    with {:ok, channel_id} <- parse_id(channel_id),
+         {:ok, message_id} <- entity_id(message_or_id),
+         {:ok, unread_count} <-
+           Repo.transaction(fn ->
+             with {:ok, channel} <- readable_channel(scope, channel_id),
+                  %Message{} = message <-
+                    Repo.one(
+                      from message in Message,
+                        where: message.id == ^message_id and message.channel_id == ^channel.id
+                    ) do
+               upsert_read_cursor(Repo, user.id, channel.id, message.inserted_at, message.id)
+               unread_count(scope, channel.id)
+             else
+               _ -> Repo.rollback(:not_found)
+             end
+           end) do
+      Phoenix.PubSub.broadcast(
+        @pubsub,
+        user_topic(user.id),
+        {:conversation_read, channel_id, unread_count}
+      )
+
+      {:ok, unread_count}
+    else
+      :error -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   def list_messages_before(channel_id, %Message{} = cursor),
     do: list_messages_before(channel_id, cursor, @message_page_size)
 
@@ -613,6 +706,12 @@ defmodule ElixirChat.Chat do
         second_user_id: second_user_id,
         last_activity_at: now
       })
+    end)
+    |> Multi.run(:first_read, fn repo, %{channel: channel} ->
+      initialize_read_cursor(repo, first_user_id, channel.id)
+    end)
+    |> Multi.run(:second_read, fn repo, %{channel: channel} ->
+      initialize_read_cursor(repo, second_user_id, channel.id)
     end)
     |> Repo.transaction()
     |> case do
@@ -908,6 +1007,29 @@ defmodule ElixirChat.Chat do
         from m in ChannelMembership, where: m.channel_id == ^channel_id and m.user_id == ^user_id
       )
 
+  def conversation_user_ids(channel_id) do
+    Repo.query!(
+      """
+      SELECT membership.user_id
+      FROM channel_memberships AS membership
+      WHERE membership.channel_id = $1
+      UNION ALL
+      SELECT users.id
+      FROM users
+      WHERE users.disabled_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM channel_memberships WHERE channel_id = $1
+        )
+        AND EXISTS (
+          SELECT 1 FROM channels
+          WHERE id = $1 AND purpose = 'group' AND kind = 'public' AND archived_at IS NULL
+        )
+      """,
+      [channel_id]
+    ).rows
+    |> List.flatten()
+  end
+
   defp require_owner(%Channel{owner_id: user_id}, user_id), do: :ok
   defp require_owner(_channel, _user_id), do: {:error, :forbidden}
 
@@ -975,6 +1097,84 @@ defmodule ElixirChat.Chat do
         where: membership.channel_id == ^channel_id,
         select: membership.user_id
     )
+  end
+
+  defp accessible_channel_ids(ids, %Scope{user: user}) do
+    Repo.all(
+      from channel in Channel,
+        as: :channel,
+        where: channel.id in ^ids and is_nil(channel.archived_at),
+        where:
+          (channel.purpose == :group and
+             (exists(
+                from membership in ChannelMembership,
+                  where:
+                    membership.channel_id == parent_as(:channel).id and
+                      membership.user_id == ^user.id
+              ) or
+                (channel.kind == :public and
+                   not exists(
+                     from membership in ChannelMembership,
+                       where: membership.channel_id == parent_as(:channel).id
+                   )))) or
+            (channel.purpose == :direct and
+               exists(
+                 from direct in DirectConversation,
+                   where:
+                     direct.channel_id == parent_as(:channel).id and
+                       (direct.first_user_id == ^user.id or direct.second_user_id == ^user.id)
+               )),
+        select: channel.id
+    )
+  end
+
+  defp unread_count(scope, channel_id),
+    do: Map.get(list_unread_counts(scope, [channel_id]), channel_id, 0)
+
+  defp initialize_read_cursor(repo, user_id, channel_id) do
+    latest =
+      repo.one(
+        from message in Message,
+          where: message.channel_id == ^channel_id,
+          order_by: [desc: message.inserted_at, desc: message.id],
+          limit: 1,
+          select: {message.inserted_at, message.id}
+      )
+
+    {last_read_at, last_read_message_id} = latest || {nil, nil}
+    upsert_read_cursor(repo, user_id, channel_id, last_read_at, last_read_message_id)
+    {:ok, :initialized}
+  end
+
+  defp upsert_read_cursor(repo, user_id, channel_id, last_read_at, last_read_message_id) do
+    now = DateTime.utc_now(:second)
+
+    repo.query!(
+      """
+      INSERT INTO conversation_reads
+        (user_id, channel_id, last_read_at, last_read_message_id, inserted_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $5)
+      ON CONFLICT (user_id, channel_id) DO UPDATE
+      SET last_read_at = EXCLUDED.last_read_at,
+          last_read_message_id = EXCLUDED.last_read_message_id,
+          updated_at = EXCLUDED.updated_at
+      WHERE conversation_reads.last_read_at IS NULL
+         OR (conversation_reads.last_read_at, conversation_reads.last_read_message_id)
+              < (EXCLUDED.last_read_at, EXCLUDED.last_read_message_id)
+      """,
+      [user_id, channel_id, last_read_at, last_read_message_id, now]
+    )
+
+    :ok
+  end
+
+  defp delete_read_cursor(repo, user_id, channel_id) do
+    repo.delete_all(
+      from read in ConversationRead,
+        where: read.user_id == ^user_id and read.channel_id == ^channel_id
+    )
+
+    :ok
   end
 
   defp broadcast_channel_change(channel, user_ids) do

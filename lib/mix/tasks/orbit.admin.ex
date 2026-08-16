@@ -12,7 +12,7 @@ defmodule Mix.Tasks.Orbit.Admin do
         with login when is_binary(login) <- opts[:login],
              name when is_binary(name) <- opts[:name],
              {:ok, {_invitation, token}} <- ElixirChat.Accounts.bootstrap_invitation(login, name) do
-          Mix.shell().info(invitation_url(token))
+          Mix.shell().info(ElixirChatWeb.InvitationPath.for_token(token))
         else
           {:error, reason} -> Mix.raise("bootstrap failed: #{inspect(reason)}")
           _ -> Mix.raise("usage: mix orbit.admin bootstrap --login LOGIN --name NAME")
@@ -28,17 +28,12 @@ defmodule Mix.Tasks.Orbit.Admin do
 
       ["reset"] ->
         case ElixirChat.Accounts.admin_password_reset() do
-          {:ok, _, token} -> Mix.shell().info(invitation_url(token))
+          {:ok, _, token} -> Mix.shell().info(ElixirChatWeb.InvitationPath.for_token(token))
           {:error, reason} -> Mix.raise("reset failed: #{inspect(reason)}")
         end
 
       _ ->
         Mix.raise("usage: mix orbit.admin bootstrap|transfer|reset")
     end
-  end
-
-  defp invitation_url(token) do
-    base = System.get_env("ORBIT_URL", "http://localhost:4000")
-    base <> "/invitation/" <> token
   end
 end

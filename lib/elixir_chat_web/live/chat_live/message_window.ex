@@ -2,6 +2,7 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
   alias ElixirChat.Chat
   alias ElixirChat.Chat.Message
   alias ElixirChatWeb.ChatLive
+  alias ElixirChatWeb.ChatLive.MessageTime
 
   import Phoenix.Component, only: [assign: 3]
 
@@ -61,7 +62,7 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
     |> assign(:has_newer_messages?, false)
     |> assign(:at_latest?, true)
     |> assign(:pending_new_messages?, false)
-    |> stream(:messages, message_items(messages), reset: true)
+    |> stream(:messages, message_items(messages, nil, socket.assigns.time_zone), reset: true)
     |> push_event("scroll_to_latest", %{})
   end
 
@@ -99,7 +100,7 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
     |> assign(:oldest_message, new_oldest || message)
     |> assign(:newest_message, message)
     |> assign(:message_count, min(socket.assigns.message_count + 1, @message_window_size))
-    |> stream_insert(:messages, message_item(message, previous_message),
+    |> stream_insert(:messages, message_item(message, previous_message, socket.assigns.time_zone),
       limit: -@message_window_size
     )
     |> reset_first_message_group(new_oldest, overflow)
@@ -108,7 +109,12 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
   def update_message(socket, %Message{} = message) do
     if within_loaded_window?(socket, message) do
       previous = previous_message(socket, message)
-      stream_insert(socket, :messages, message_item(message, previous))
+
+      stream_insert(
+        socket,
+        :messages,
+        message_item(message, previous, socket.assigns.time_zone)
+      )
     else
       socket
     end
@@ -160,7 +166,12 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
   defp regroup_next(socket, nil, _previous), do: socket
 
   defp regroup_next(socket, next, previous),
-    do: stream_insert(socket, :messages, message_item(next, previous))
+    do:
+      stream_insert(
+        socket,
+        :messages,
+        message_item(next, previous, socket.assigns.time_zone)
+      )
 
   defp replace_oldest_if_removed(socket, %Message{id: id}, replacement) do
     case socket.assigns.oldest_message do
@@ -242,11 +253,16 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
     |> assign(:has_older_messages?, has_older_messages?)
     |> assign(:has_newer_messages?, has_newer_messages?)
     |> assign(:at_latest?, !has_newer_messages?)
-    |> stream(:messages, messages |> message_items() |> Enum.reverse(),
+    |> stream(
+      :messages,
+      messages |> message_items(nil, socket.assigns.time_zone) |> Enum.reverse(),
       at: 0,
       limit: @message_window_size
     )
-    |> stream_insert(:messages, message_item(oldest, List.last(messages)))
+    |> stream_insert(
+      :messages,
+      message_item(oldest, List.last(messages), socket.assigns.time_zone)
+    )
     |> push_event("older_messages_loaded", %{})
   end
 
@@ -282,7 +298,11 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
     |> assign(:has_newer_messages?, has_newer_messages?)
     |> assign(:at_latest?, !has_newer_messages?)
     |> assign(:pending_new_messages?, has_newer_messages? && socket.assigns.pending_new_messages?)
-    |> stream(:messages, message_items(messages, previous_message), limit: -@message_window_size)
+    |> stream(
+      :messages,
+      message_items(messages, previous_message, socket.assigns.time_zone),
+      limit: -@message_window_size
+    )
     |> reset_first_message_group(new_oldest, overflow)
     |> push_event("newer_messages_loaded", %{})
   end
@@ -301,7 +321,7 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
   defp reset_first_message_group(socket, _message, 0), do: socket
 
   defp reset_first_message_group(socket, message, _overflow) do
-    stream_insert(socket, :messages, message_item(message, nil))
+    stream_insert(socket, :messages, message_item(message, nil, socket.assigns.time_zone))
   end
 
   defp remember_messages(socket, messages) do
@@ -320,16 +340,38 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
   defp forget_message(socket, id),
     do: assign(socket, :loaded_message_ids, MapSet.delete(socket.assigns.loaded_message_ids, id))
 
-  def message_items(messages, previous_message \\ nil) do
+  def message_items(messages, previous_message, time_zone) do
     messages
     |> Enum.map_reduce(previous_message, fn message, previous ->
-      {message_item(message, previous), message}
+      {message_item(message, previous, time_zone), message}
     end)
     |> elem(0)
   end
 
-  defp message_item(message, previous_message) do
-    %{id: message.id, message: message, continuation?: same_author?(message, previous_message)}
+  defp message_item(message, previous_message, time_zone) do
+    local_datetime = MessageTime.localize(message.inserted_at, time_zone)
+    local_date = DateTime.to_date(local_datetime)
+    starts_new_day? = different_day?(local_date, previous_message, time_zone)
+
+    %{
+      id: message.id,
+      message: message,
+      local_datetime: local_datetime,
+      date_label: MessageTime.date_label(local_date, MessageTime.current_year(time_zone)),
+      starts_new_day?: starts_new_day?,
+      continuation?: !starts_new_day? && same_author?(message, previous_message)
+    }
+  end
+
+  defp different_day?(_local_date, nil, _time_zone), do: true
+
+  defp different_day?(local_date, previous_message, time_zone) do
+    previous_date =
+      previous_message.inserted_at
+      |> MessageTime.localize(time_zone)
+      |> DateTime.to_date()
+
+    local_date != previous_date
   end
 
   defp same_author?(%Message{user_id: user_id}, %Message{user_id: user_id})

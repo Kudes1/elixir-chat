@@ -1,6 +1,7 @@
 defmodule ElixirChatWeb.AdminUsersLive do
   use ElixirChatWeb, :live_view
   alias ElixirChat.Accounts
+  alias ElixirChatWeb.InvitationPath
 
   def mount(_, _, socket) do
     {users, has_more?} = Accounts.list_users(socket.assigns.current_scope, nil)
@@ -8,7 +9,7 @@ defmodule ElixirChatWeb.AdminUsersLive do
     {:ok,
      socket
      |> assign(:page_title, "Пользователи")
-     |> assign(:invite_url, nil)
+     |> assign(:invite_path, nil)
      |> assign(:invite_form, to_form(%{}, as: :invite))
      |> assign(:users_cursor, List.last(users))
      |> assign(:has_more_users?, has_more?)
@@ -17,7 +18,7 @@ defmodule ElixirChatWeb.AdminUsersLive do
 
   def handle_event("invite", %{"invite" => attrs}, socket) do
     case Accounts.create_registration_invitation(socket.assigns.current_scope, attrs) do
-      {:ok, _, token} -> {:noreply, assign(socket, :invite_url, url(~p"/invitation/#{token}"))}
+      {:ok, _, token} -> {:noreply, assign(socket, :invite_path, InvitationPath.for_token(token))}
       {:error, _} -> {:noreply, put_flash(socket, :error, "Проверьте логин и имя.")}
     end
   end
@@ -36,7 +37,7 @@ defmodule ElixirChatWeb.AdminUsersLive do
   def handle_event("reset", %{"id" => id}, socket) do
     with {:ok, user} <- Accounts.get_managed_user(socket.assigns.current_scope, id),
          {:ok, _, token} <- Accounts.create_password_reset(socket.assigns.current_scope, user) do
-      {:noreply, assign(socket, :invite_url, url(~p"/invitation/#{token}"))}
+      {:noreply, assign(socket, :invite_path, InvitationPath.for_token(token))}
     else
       _ -> {:noreply, put_flash(socket, :error, "Нельзя выдать ссылку сброса.")}
     end
@@ -74,8 +75,8 @@ defmodule ElixirChatWeb.AdminUsersLive do
           />
           <button id="create-invitation" class="btn btn-primary self-end">Создать приглашение</button>
         </.form>
-        <div :if={@invite_url} id="one-time-link" class="alert alert-warning break-all">
-          Скопируйте сейчас — ссылка больше не показывается: {@invite_url}
+        <div :if={@invite_path} id="one-time-link" class="alert alert-warning break-all">
+          Скопируйте путь сейчас — он больше не показывается. Добавьте его к адресу нужного домена: {@invite_path}
         </div>
         <div id="users" phx-update="stream" class="mt-8 space-y-3">
           <div

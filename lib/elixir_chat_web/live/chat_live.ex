@@ -13,6 +13,7 @@ defmodule ElixirChatWeb.ChatLive do
 
   @presence_topic "presence:lobby"
   @message_page_size 50
+  @default_time_zone "Etc/UTC"
 
   @impl true
   def mount(_params, _session, socket) do
@@ -38,14 +39,24 @@ defmodule ElixirChatWeb.ChatLive do
       |> Chat.list_direct_conversations()
       |> Enum.map(&direct_item(&1, user.id))
 
+    channels = Chat.list_channels(socket.assigns.current_scope)
+
+    conversation_ids =
+      Enum.map(channels, & &1.id) ++ Enum.map(direct_conversations, & &1.direct.channel_id)
+
     {:ok,
      socket
      |> assign(:page_title, "Orbit")
-     |> assign(:channels, Chat.list_channels(socket.assigns.current_scope))
+     |> assign(:time_zone, browser_time_zone(socket))
+     |> assign(:channels, channels)
      |> assign(:channel, nil)
      |> assign(:direct_conversation, nil)
      |> assign(:current_other_user, nil)
      |> assign(:direct_conversations, direct_conversations)
+     |> assign(
+       :unread_counts,
+       Chat.list_unread_counts(socket.assigns.current_scope, conversation_ids)
+     )
      |> assign(:subscribed_channel_id, nil)
      |> assign(:visitor_name, user.display_name)
      |> assign(:online_count, OnlineUsers.count())
@@ -65,6 +76,23 @@ defmodule ElixirChatWeb.ChatLive do
      |> assign(:invite_search_results, [])
      |> reset_message_assigns()
      |> stream(:messages, [])}
+  end
+
+  defp browser_time_zone(socket) do
+    time_zone =
+      if connected?(socket) do
+        case get_connect_params(socket) do
+          %{"time_zone" => time_zone} when is_binary(time_zone) -> time_zone
+          _params -> @default_time_zone
+        end
+      else
+        @default_time_zone
+      end
+
+    case DateTime.shift_zone(DateTime.utc_now(), time_zone) do
+      {:ok, _datetime} -> time_zone
+      {:error, _reason} -> @default_time_zone
+    end
   end
 
   @impl true
@@ -415,6 +443,27 @@ defmodule ElixirChatWeb.ChatLive do
     {:noreply, MessageWindow.load_latest_messages(socket)}
   end
 
+  def handle_event(
+        "mark_conversation_read",
+        %{"channel_id" => channel_id, "message_id" => message_id},
+        socket
+      ) do
+    if socket.assigns.channel && socket.assigns.at_latest? && socket.assigns.newest_message &&
+         to_string(socket.assigns.channel.id) == to_string(channel_id) &&
+         to_string(socket.assigns.newest_message.id) == to_string(message_id) do
+      case Chat.mark_conversation_read(socket.assigns.current_scope, channel_id, message_id) do
+        {:ok, count} ->
+          {:reply, %{unread_count: count},
+           put_unread_count(socket, socket.assigns.channel.id, count)}
+
+        {:error, _reason} ->
+          {:reply, %{error: "not_found"}, socket}
+      end
+    else
+      {:reply, %{error: "stale_conversation"}, socket}
+    end
+  end
+
   @impl true
   def handle_info({:message_created, %Message{} = message}, socket) do
     if socket.assigns.channel && message.channel_id == socket.assigns.channel.id do
@@ -423,6 +472,16 @@ defmodule ElixirChatWeb.ChatLive do
       {:noreply, socket}
     end
   end
+
+  def handle_info({:conversation_message_created, %Message{} = message}, socket) do
+    {:noreply, refresh_unread_count(socket, message.channel_id)}
+  end
+
+  def handle_info({:conversation_message_deleted, %Message{} = message}, socket) do
+    {:noreply, refresh_unread_count(socket, message.channel_id)}
+  end
+
+  def handle_info({:conversation_message_updated, %Message{}}, socket), do: {:noreply, socket}
 
   def handle_info({:message_deleted, %Message{} = message}, socket) do
     if socket.assigns.channel && message.channel_id == socket.assigns.channel.id do
@@ -436,6 +495,8 @@ defmodule ElixirChatWeb.ChatLive do
         {:direct_message_deleted, %DirectConversation{} = direct, %Message{} = message},
         socket
       ) do
+    socket = refresh_unread_count(socket, message.channel_id)
+
     if socket.assigns.direct_conversation && socket.assigns.direct_conversation.id == direct.id do
       {:noreply, MessageWindow.remove_message(socket, message)}
     else
@@ -470,7 +531,7 @@ defmodule ElixirChatWeb.ChatLive do
         {:direct_message_created, %DirectConversation{} = direct, %Message{} = message},
         socket
       ) do
-    socket = upsert_direct(socket, direct, true)
+    socket = socket |> upsert_direct(direct, true) |> refresh_unread_count(message.channel_id)
 
     if socket.assigns.direct_conversation &&
          socket.assigns.direct_conversation.id == direct.id do
@@ -481,7 +542,11 @@ defmodule ElixirChatWeb.ChatLive do
   end
 
   def handle_info({:channels_changed, channel_id}, socket) do
-    socket = socket |> refresh_channels() |> refresh_available_channels_if_open()
+    socket =
+      socket
+      |> refresh_channels()
+      |> refresh_all_unread_counts()
+      |> refresh_available_channels_if_open()
 
     if socket.assigns.channel && is_nil(socket.assigns.direct_conversation) &&
          socket.assigns.channel.id == channel_id do
@@ -495,6 +560,10 @@ defmodule ElixirChatWeb.ChatLive do
     else
       {:noreply, socket}
     end
+  end
+
+  def handle_info({:conversation_read, channel_id, count}, socket) do
+    {:noreply, put_unread_count(socket, channel_id, count)}
   end
 
   def handle_info({:catalog_changed, _channel_id}, socket) do
@@ -631,7 +700,10 @@ defmodule ElixirChatWeb.ChatLive do
           List.replace_at(socket.assigns.direct_conversations, existing_index, item)
       end
 
-    socket = assign(socket, :direct_conversations, direct_conversations)
+    socket =
+      socket
+      |> assign(:direct_conversations, direct_conversations)
+      |> ensure_unread_count(direct.channel_id)
 
     case socket.assigns.direct_conversation do
       %DirectConversation{id: id} when id == direct.id ->
@@ -668,6 +740,33 @@ defmodule ElixirChatWeb.ChatLive do
 
   defp refresh_channels(socket),
     do: assign(socket, :channels, Chat.list_channels(socket.assigns.current_scope))
+
+  defp refresh_all_unread_counts(socket) do
+    ids =
+      Enum.map(socket.assigns.channels, & &1.id) ++
+        Enum.map(socket.assigns.direct_conversations, & &1.direct.channel_id)
+
+    assign(socket, :unread_counts, Chat.list_unread_counts(socket.assigns.current_scope, ids))
+  end
+
+  defp refresh_unread_count(socket, channel_id) do
+    count =
+      socket.assigns.current_scope
+      |> Chat.list_unread_counts([channel_id])
+      |> Map.get(channel_id, 0)
+
+    put_unread_count(socket, channel_id, count)
+  end
+
+  defp ensure_unread_count(socket, channel_id) do
+    if Map.has_key?(socket.assigns.unread_counts, channel_id),
+      do: socket,
+      else: refresh_unread_count(socket, channel_id)
+  end
+
+  defp put_unread_count(socket, channel_id, count) do
+    assign(socket, :unread_counts, Map.put(socket.assigns.unread_counts, channel_id, count))
+  end
 
   defp refresh_available_channels(socket) do
     assign(

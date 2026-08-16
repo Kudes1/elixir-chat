@@ -9,6 +9,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
   alias ElixirChat.Chat.Message
   alias ElixirChat.Accounts.Scope
   alias ElixirChat.Repo
+  alias ElixirChatWeb.ChatLive.MessageTime
 
   setup do
     general = Repo.insert!(Channel.changeset(%Channel{}, %{name: "general", kind: :public}))
@@ -80,6 +81,83 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert has_element?(view, "#current-user .profile-avatar#{avatar_class}", "И")
   end
 
+  test "separates messages at local midnight and renders browser-local time", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    year = MessageTime.current_year("Asia/Omsk")
+
+    {:ok, first} = Chat.create_message(Scope.for_user(user), general, %{body: "До полуночи"})
+    {:ok, second} = Chat.create_message(Scope.for_user(user), general, %{body: "После полуночи"})
+
+    first = put_message_time(first, utc_datetime(year, 8, 15, 17, 59))
+    second = put_message_time(second, utc_datetime(year, 8, 15, 18, 1))
+
+    {:ok, view, _html} =
+      conn
+      |> log_in_user(user)
+      |> put_connect_params(%{"time_zone" => "Asia/Omsk"})
+      |> live(~p"/channels/#{general.public_id}")
+
+    assert has_element?(view, "#message-date-#{first.id}", "15 августа")
+    assert has_element?(view, "#message-date-#{second.id}", "16 августа")
+    assert has_element?(view, "#messages-#{first.id} .message-meta time", "23:59")
+    assert has_element?(view, "#messages-#{second.id} .message-meta time", "00:01")
+    refute has_element?(view, "#messages-#{second.id}.message-continuation")
+
+    assert has_element?(
+             view,
+             "#messages-#{second.id} .message-meta time[title*='Asia/Omsk']"
+           )
+  end
+
+  test "keeps grouping across UTC midnight when the local date is unchanged", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    year = MessageTime.current_year("Asia/Omsk")
+
+    {:ok, first} = Chat.create_message(Scope.for_user(user), general, %{body: "До UTC-полуночи"})
+
+    {:ok, second} =
+      Chat.create_message(Scope.for_user(user), general, %{body: "После UTC-полуночи"})
+
+    first = put_message_time(first, utc_datetime(year, 8, 15, 23, 59))
+    second = put_message_time(second, utc_datetime(year, 8, 16, 0, 1))
+
+    {:ok, view, _html} =
+      conn
+      |> log_in_user(user)
+      |> put_connect_params(%{"time_zone" => "Asia/Omsk"})
+      |> live(~p"/channels/#{general.public_id}")
+
+    assert has_element?(view, "#message-date-#{first.id}", "16 августа")
+    refute has_element?(view, "#message-date-#{second.id}")
+    assert has_element?(view, "#messages-#{second.id}.message-continuation")
+    assert has_element?(view, "#messages-#{second.id} .message-continuation-time", "06:01")
+  end
+
+  test "falls back to UTC for an invalid browser time zone", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    year = MessageTime.current_year("Etc/UTC")
+    {:ok, message} = Chat.create_message(Scope.for_user(user), general, %{body: "UTC fallback"})
+    message = put_message_time(message, utc_datetime(year, 8, 15, 12, 34))
+
+    {:ok, view, _html} =
+      conn
+      |> log_in_user(user)
+      |> put_connect_params(%{"time_zone" => "invalid/time-zone"})
+      |> live(~p"/channels/#{general.public_id}")
+
+    assert has_element?(view, "#messages-#{message.id} .message-meta time", "12:34")
+    assert has_element?(view, "#messages-#{message.id} .message-meta time[title*='Etc/UTC']")
+  end
+
   test "starts a new author header after another user writes", %{
     conn: conn,
     general: general,
@@ -141,6 +219,45 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert has_element?(view, "#messages-#{oldest.id} .message-avatar")
     assert has_element?(view, "#messages-#{boundary.id}.message-continuation")
     refute has_element?(view, "#messages-#{boundary.id} .message-avatar")
+  end
+
+  test "keeps local date separators across the older-messages page boundary", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    year = MessageTime.current_year("Asia/Omsk")
+    before_midnight = utc_datetime(year, 8, 15, 17, 59)
+    after_midnight = utc_datetime(year, 8, 15, 18, 0)
+
+    messages =
+      for number <- 1..51 do
+        {:ok, message} =
+          Chat.create_message(Scope.for_user(user), general, %{body: "Граница даты #{number}"})
+
+        datetime =
+          if number == 1,
+            do: before_midnight,
+            else: DateTime.add(after_midnight, number - 2, :second)
+
+        put_message_time(message, datetime)
+      end
+
+    [first, boundary | _rest] = messages
+
+    {:ok, view, _html} =
+      conn
+      |> log_in_user(user)
+      |> put_connect_params(%{"time_zone" => "Asia/Omsk"})
+      |> live(~p"/channels/#{general.public_id}")
+
+    refute has_element?(view, "#messages-#{first.id}")
+    assert has_element?(view, "#message-date-#{boundary.id}", "16 августа")
+
+    render_hook(view, "load_older_messages", %{})
+
+    assert has_element?(view, "#message-date-#{first.id}", "15 августа")
+    assert has_element?(view, "#message-date-#{boundary.id}", "16 августа")
   end
 
   test "bounds the message DOM and paginates in both directions", %{
@@ -1203,12 +1320,127 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert has_element?(watcher_view, "#messages-#{message.id}", "Обновлено для всех")
   end
 
+  test "renders compact unread badges and caps their visible value at 99+", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    other = register_user(%{display_name: "Олег", login: "badge.sender"})
+
+    for number <- 1..100 do
+      {:ok, _message} =
+        Chat.create_message(Scope.for_user(other), general, %{body: "Непрочитанное #{number}"})
+    end
+
+    {:ok, direct} = Chat.get_or_create_direct_conversation(Scope.for_user(user), other.id)
+
+    {:ok, _direct_message} =
+      Chat.create_message(Scope.for_user(other), direct.channel, %{body: "Личное непрочитанное"})
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    assert has_element?(
+             view,
+             "#channel-#{general.id} > #channel-unread-#{general.id}[aria-label='Непрочитанных сообщений: 100']",
+             "99+"
+           )
+
+    assert has_element?(
+             view,
+             "#direct-conversation-#{direct.id} > #direct-unread-#{direct.id}[aria-label='Непрочитанных сообщений: 1']",
+             "1"
+           )
+  end
+
+  test "updates an inactive conversation badge in real time", %{
+    conn: conn,
+    general: general,
+    product: product,
+    user: user
+  } do
+    other = register_user(%{display_name: "Олег", login: "inactive.sender"})
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    {:ok, _message} =
+      Chat.create_message(Scope.for_user(other), product, %{body: "Новое в product"})
+
+    render(view)
+    assert has_element?(view, "#channel-unread-#{product.id}", "1")
+    refute has_element?(view, "#channel-unread-#{general.id}")
+  end
+
+  test "marking the visible latest message clears the badge in every tab", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    other = register_user(%{display_name: "Олег", login: "tabs.sender"})
+    {:ok, message} = Chat.create_message(Scope.for_user(other), general, %{body: "Для вкладок"})
+
+    {:ok, first_view, _html} =
+      live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    {:ok, second_view, _html} =
+      live(log_in_user(build_conn(), user), ~p"/channels/#{general.public_id}")
+
+    assert has_element?(first_view, "#channel-unread-#{general.id}", "1")
+    assert has_element?(second_view, "#channel-unread-#{general.id}", "1")
+
+    render_hook(first_view, "mark_conversation_read", %{
+      "channel_id" => to_string(general.id),
+      "message_id" => to_string(message.id)
+    })
+
+    refute has_element?(first_view, "#channel-unread-#{general.id}")
+    render(second_view)
+    refute has_element?(second_view, "#channel-unread-#{general.id}")
+  end
+
+  test "does not clear unread state from a historical message window", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    other = register_user(%{display_name: "Олег", login: "history.sender"})
+
+    messages =
+      for number <- 1..151 do
+        {:ok, message} =
+          Chat.create_message(Scope.for_user(other), general, %{body: "История #{number}"})
+
+        message
+      end
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+    for _page <- 1..3, do: render_hook(view, "load_older_messages", %{})
+
+    historical_newest = Enum.at(messages, 149)
+
+    render_hook(view, "mark_conversation_read", %{
+      "channel_id" => to_string(general.id),
+      "message_id" => to_string(historical_newest.id)
+    })
+
+    assert has_element?(view, "#channel-unread-#{general.id}", "99+")
+    assert %{general.id => 151} == Chat.list_unread_counts(Scope.for_user(user), [general.id])
+  end
+
   defp message_element_count(view) do
     view
     |> render()
     |> LazyHTML.from_fragment()
     |> LazyHTML.query(".message-list article")
     |> Enum.count()
+  end
+
+  defp put_message_time(message, datetime) do
+    message
+    |> Ecto.Changeset.change(inserted_at: datetime, updated_at: datetime)
+    |> Repo.update!()
+  end
+
+  defp utc_datetime(year, month, day, hour, minute) do
+    DateTime.new!(Date.new!(year, month, day), Time.new!(hour, minute, 0), "Etc/UTC")
   end
 
   defp direct_ids(view) do

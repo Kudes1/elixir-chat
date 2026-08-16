@@ -87,12 +87,6 @@ if config_env() == :prod do
       You can generate one by calling: mix phx.gen.secret
       """
 
-  host = System.get_env("PHX_HOST") || "example.com"
-
-  allowed_origins =
-    ["//#{host}", "//#{host}:4000"] ++
-      if host == "localhost", do: ["//127.0.0.1:4000"], else: []
-
   dns_cluster_query =
     case System.get_env("DNS_CLUSTER_QUERY") do
       nil -> :ignore
@@ -103,7 +97,7 @@ if config_env() == :prod do
   config :elixir_chat, :dns_cluster_query, dns_cluster_query
 
   config :elixir_chat, ElixirChatWeb.Endpoint,
-    url: [host: host, port: 443, scheme: "https"],
+    url: [host: "localhost", port: 443, scheme: "https"],
     http: [
       # Enable IPv6 and bind on all interfaces.
       # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
@@ -111,7 +105,7 @@ if config_env() == :prod do
       # for details about using IPv6 vs IPv4 and loopback vs public addresses.
       ip: {0, 0, 0, 0, 0, 0, 0, 0}
     ],
-    check_origin: allowed_origins,
+    check_origin: :conn,
     secret_key_base: secret_key_base
 
   # ## SSL Support

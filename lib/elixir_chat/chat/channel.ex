@@ -18,6 +18,7 @@ defmodule ElixirChat.Chat.Channel do
     has_many :messages, ElixirChat.Chat.Message
     has_one :direct_conversation, ElixirChat.Chat.DirectConversation
     has_many :memberships, ElixirChat.Chat.ChannelMembership
+    has_many :conversation_reads, ElixirChat.Chat.ConversationRead
 
     many_to_many :members, ElixirChat.Accounts.User,
       join_through: ElixirChat.Chat.ChannelMembership

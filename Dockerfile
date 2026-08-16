@@ -7,7 +7,7 @@ ARG RUNNER_IMAGE="debian:${DEBIAN_VERSION}"
 
 FROM ${ELIXIR_IMAGE} AS base
 
-RUN apt-get update -y && apt-get install -y --no-install-recommends build-essential git inotify-tools \
+RUN apt-get update -y && apt-get install -y --no-install-recommends build-essential git inotify-tools tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -44,7 +44,7 @@ RUN mix assets.deploy && mix release
 
 FROM ${RUNNER_IMAGE} AS production
 
-RUN apt-get update -y && apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 ca-certificates \
+RUN apt-get update -y && apt-get install -y --no-install-recommends libstdc++6 openssl libncurses6 ca-certificates tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

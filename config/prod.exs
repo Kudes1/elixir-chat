@@ -15,7 +15,8 @@ config :elixir_chat, ElixirChatWeb.Endpoint,
 # Note `:force_ssl` is required to be set at compile-time.
 config :elixir_chat, ElixirChatWeb.Endpoint,
   force_ssl: [
-    rewrite_on: [:x_forwarded_proto],
+    host: nil,
+    rewrite_on: [:x_forwarded_host, :x_forwarded_port, :x_forwarded_proto],
     exclude: [
       # paths: ["/health"],
       hosts: ["localhost", "127.0.0.1"]

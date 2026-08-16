@@ -37,14 +37,11 @@ defmodule ElixirChat.Release do
       end
 
     case result do
-      {:ok, _record, token} -> IO.puts(invitation_url(token))
+      {:ok, _record, token} -> IO.puts(ElixirChatWeb.InvitationPath.for_token(token))
       {:ok, _record} -> IO.puts("Administrator transferred.")
       {:error, reason} -> raise "admin command failed: #{inspect(reason)}"
     end
   end
-
-  defp invitation_url(token),
-    do: System.get_env("ORBIT_URL", "http://localhost:4000") <> "/invitation/" <> token
 
   defp load_app do
     Application.load(@app)

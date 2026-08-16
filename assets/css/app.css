@@ -606,10 +606,33 @@ button {
 }
 
 .channel-name {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.unread-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  margin-left: auto;
+  padding: 0 6px;
+  color: #fff;
+  border-radius: 999px;
+  background: var(--orbit-accent);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.channel-link.selected .unread-badge {
+  color: var(--orbit-sidebar-active);
+  background: #fff;
 }
 
 .channel-link:hover {
@@ -708,6 +731,7 @@ button {
 
 .direct-user-result > span,
 .direct-link-details {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -980,6 +1004,34 @@ button {
   padding: 5px 26px 2px;
   background: var(--orbit-bg);
   transition: background-color 120ms ease;
+}
+
+.message-date-divider {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  height: 24px;
+  margin: 2px -4px 12px;
+  color: var(--orbit-text-subtle);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.message-date-divider::before,
+.message-date-divider::after {
+  height: 1px;
+  flex: 1 1 auto;
+  background: var(--orbit-border);
+  content: "";
+}
+
+.message-day-start .message-avatar {
+  top: 45px;
+}
+
+.message-day-start .message-actions {
+  top: 40px;
 }
 
 .message + .message:not(.message-continuation) {

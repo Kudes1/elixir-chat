@@ -9,6 +9,7 @@ defmodule ElixirChat.Accounts.User do
     field :hashed_password, :string, redact: true
     field :role, Ecto.Enum, values: [:user, :admin], default: :user
     field :disabled_at, :utc_datetime
+    has_many :conversation_reads, ElixirChat.Chat.ConversationRead
     timestamps(type: :utc_datetime)
   end
 
