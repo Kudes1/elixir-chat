@@ -51,6 +51,7 @@ defmodule ElixirChatWeb.ChatLive do
      |> assign(:online_count, OnlineUsers.count())
      |> assign(:online_user_ids, OnlineUsers.online_ids())
      |> assign(:message_form, empty_message_form())
+     |> assign(:editing_message_id, nil)
      |> assign(:direct_search_form, direct_search_form())
      |> assign(:direct_search_results, [])
      |> assign(:direct_search_open?, false)
@@ -316,6 +317,50 @@ defmodule ElixirChatWeb.ChatLive do
     end
   end
 
+  def handle_event("start_edit_message", %{"message-id" => message_id}, socket) do
+    with {:ok, message} <- Chat.get_message(message_id),
+         true <- Chat.can_edit_message?(socket.assigns.current_scope.user, message) do
+      socket =
+        socket
+        |> assign(:editing_message_id, message.id)
+        |> MessageWindow.update_message(message)
+
+      {:noreply, socket}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("cancel_edit_message", %{"message-id" => message_id}, socket) do
+    socket = assign(socket, :editing_message_id, nil)
+
+    case Chat.get_message(message_id) do
+      {:ok, message} -> {:noreply, MessageWindow.update_message(socket, message)}
+      {:error, _reason} -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("save_edit_message", %{"message-id" => message_id, "body" => body}, socket) do
+    case Chat.edit_message(socket.assigns.current_scope, message_id, %{body: body}) do
+      {:ok, message} ->
+        socket =
+          socket
+          |> assign(:editing_message_id, nil)
+          |> MessageWindow.update_message(message)
+
+        {:noreply, socket}
+
+      {:error, %Ecto.Changeset{}} ->
+        {:noreply, put_flash(socket, :error, "Не удалось сохранить изменения.")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:editing_message_id, nil)
+         |> put_flash(:error, channel_error(reason))}
+    end
+  end
+
   def handle_event("load_older_messages", _params, socket) do
     case socket.assigns do
       %{channel: channel, has_older_messages?: true, oldest_message: %Message{} = oldest} ->
@@ -369,6 +414,25 @@ defmodule ElixirChatWeb.ChatLive do
       ) do
     if socket.assigns.direct_conversation && socket.assigns.direct_conversation.id == direct.id do
       {:noreply, MessageWindow.remove_message(socket, message)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info({:message_updated, %Message{} = message}, socket) do
+    if socket.assigns.channel && message.channel_id == socket.assigns.channel.id do
+      {:noreply, MessageWindow.update_message(socket, message)}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info(
+        {:direct_message_updated, %DirectConversation{} = direct, %Message{} = message},
+        socket
+      ) do
+    if socket.assigns.direct_conversation && socket.assigns.direct_conversation.id == direct.id do
+      {:noreply, MessageWindow.update_message(socket, message)}
     else
       {:noreply, socket}
     end

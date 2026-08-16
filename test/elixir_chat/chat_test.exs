@@ -451,6 +451,133 @@ defmodule ElixirChat.ChatTest do
     end
   end
 
+  test "own messages can be edited within the delete window", %{scope: scope} do
+    channel = channel_fixture(%{name: "edit-own"})
+    message = message_fixture(scope, channel, %{body: "Исходный текст"})
+
+    message =
+      message
+      |> Ecto.Changeset.change(inserted_at: DateTime.add(DateTime.utc_now(:second), -2, :second))
+      |> Repo.update!()
+
+    assert {:ok, edited} = Chat.edit_message(scope, message.id, %{body: "Новый текст"})
+    assert edited.id == message.id
+    assert edited.body == "Новый текст"
+    assert edited.updated_at != message.inserted_at
+    assert Repo.get!(Message, message.id).body == "Новый текст"
+  end
+
+  test "own messages cannot be edited after the delete window elapses", %{scope: scope} do
+    channel = channel_fixture(%{name: "edit-expired"})
+    message = message_fixture(scope, channel, %{body: "Просрочено"})
+
+    message
+    |> Ecto.Changeset.change(inserted_at: DateTime.add(DateTime.utc_now(:second), -600, :second))
+    |> Repo.update!()
+
+    assert {:error, :forbidden} = Chat.edit_message(scope, message.id, %{body: "Поздно"})
+  end
+
+  test "other members cannot edit someone else's message", %{scope: scope} do
+    channel = channel_fixture(%{name: "edit-others"})
+    other = user_fixture(%{login: "edit.other", display_name: "Другой"})
+    message = message_fixture(Scope.for_user(other), channel, %{body: "Чужое"})
+
+    assert {:error, :forbidden} = Chat.edit_message(scope, message.id, %{body: "Подмена"})
+  end
+
+  test "channel owner cannot edit another member's message even within the window", %{
+    scope: owner_scope
+  } do
+    member = user_fixture(%{login: "edit.member", display_name: "Участник"})
+
+    assert {:ok, channel} =
+             Chat.create_channel(owner_scope, %{name: "owned-edit", kind: :public})
+
+    assert {:ok, _} = Chat.join_channel(Scope.for_user(member), channel.id)
+    message = message_fixture(Scope.for_user(member), channel, %{body: "Сообщение участника"})
+
+    assert {:error, :forbidden} = Chat.edit_message(owner_scope, message.id, %{body: "Подмена"})
+    assert Repo.get!(Message, message.id).body == "Сообщение участника"
+  end
+
+  test "direct conversation participants can edit their own message but not each other's", %{
+    scope: scope
+  } do
+    other = user_fixture(%{login: "edit.direct.other", display_name: "Собеседник"})
+    assert {:ok, direct} = Chat.get_or_create_direct_conversation(scope, other.id)
+    assert {:ok, message} = Chat.create_message(scope, direct.channel, %{body: "Привет"})
+
+    assert {:error, :forbidden} =
+             Chat.edit_message(Scope.for_user(other), message.id, %{body: "Подмена"})
+
+    assert {:ok, edited} = Chat.edit_message(scope, message.id, %{body: "Привет!"})
+    assert edited.body == "Привет!"
+  end
+
+  test "editing a nonexistent message returns not_found", %{scope: scope} do
+    assert {:error, :not_found} = Chat.edit_message(scope, "not-an-id", %{body: "Кто-то"})
+  end
+
+  test "editing a message with the same body is a no-op that does not touch updated_at", %{
+    scope: scope
+  } do
+    channel = channel_fixture(%{name: "edit-noop"})
+    message = message_fixture(scope, channel, %{body: "Без изменений"})
+
+    assert {:ok, edited} = Chat.edit_message(scope, message.id, %{body: "Без изменений"})
+    assert edited.updated_at == message.inserted_at
+  end
+
+  describe "can_edit_message?/2" do
+    test "matches edit_message/3 for the same own-message-within-window rule", %{
+      scope: scope,
+      user: user
+    } do
+      channel = channel_fixture(%{name: "edit-predicate-own"})
+      message = message_fixture(scope, channel, %{body: "Сообщение"})
+
+      assert Chat.can_edit_message?(user, message)
+    end
+
+    test "matches edit_message/3 for the expired-window rule", %{scope: scope, user: user} do
+      channel = channel_fixture(%{name: "edit-predicate-expired"})
+      message = message_fixture(scope, channel, %{body: "Просрочено"})
+
+      message =
+        message
+        |> Ecto.Changeset.change(
+          inserted_at: DateTime.add(DateTime.utc_now(:second), -600, :second)
+        )
+        |> Repo.update!()
+
+      refute Chat.can_edit_message?(user, message)
+    end
+
+    test "matches edit_message/3 for another member's message", %{user: user} do
+      channel = channel_fixture(%{name: "edit-predicate-others"})
+      other = user_fixture(%{login: "edit.predicate.other", display_name: "Другой"})
+      message = message_fixture(Scope.for_user(other), channel, %{body: "Чужое"})
+
+      refute Chat.can_edit_message?(user, message)
+    end
+
+    test "returns false for the channel owner on another member's message (no owner override)", %{
+      scope: owner_scope
+    } do
+      owner = owner_scope.user
+      member = user_fixture(%{login: "edit.predicate.member", display_name: "Участник"})
+
+      assert {:ok, channel} =
+               Chat.create_channel(owner_scope, %{name: "edit-predicate-owned", kind: :public})
+
+      assert {:ok, _} = Chat.join_channel(Scope.for_user(member), channel.id)
+      message = message_fixture(Scope.for_user(member), channel, %{body: "Сообщение"})
+
+      refute Chat.can_edit_message?(owner, message)
+    end
+  end
+
   defp channel_fixture(attrs) do
     defaults = %{name: "channel-#{System.unique_integer([:positive])}", kind: :public}
     Repo.insert!(Channel.changeset(%Channel{}, Map.merge(defaults, attrs)))

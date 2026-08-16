@@ -1148,6 +1148,65 @@ button {
   background: rgb(215 101 122 / 12%);
 }
 
+.message-edited-badge {
+  color: var(--orbit-text-subtle);
+  font-size: 10px;
+}
+
+.message-edited-badge-hover {
+  margin-left: 6px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.message:hover .message-edited-badge-hover {
+  opacity: 1;
+}
+
+.message-edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.message-edit-input {
+  width: 100%;
+  padding: 6px 10px;
+  color: var(--orbit-text);
+  font: inherit;
+  border: 1px solid var(--orbit-border-strong);
+  border-radius: 8px;
+  background: var(--orbit-surface-raised);
+  resize: vertical;
+}
+
+.message-edit-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.message-edit-save,
+.message-edit-cancel {
+  padding: 4px 12px;
+  font-size: 13px;
+  border: 0;
+  border-radius: 6px;
+}
+
+.message-edit-save {
+  color: #f0ecff;
+  background: var(--orbit-accent-soft);
+}
+
+.message-edit-cancel {
+  color: var(--orbit-text-subtle);
+  background: var(--orbit-surface-raised);
+}
+
+.message-edit-cancel:hover {
+  color: var(--orbit-text);
+}
+
 /* Composer */
 
 .composer {

@@ -970,6 +970,210 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert has_element?(view, "#message-login-#{second.id}", "@#{user.login}")
   end
 
+  test "author can edit their own recent message", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, message} = Chat.create_message(Scope.for_user(user), general, %{body: "Исходник"})
+
+    message
+    |> Ecto.Changeset.change(inserted_at: DateTime.add(DateTime.utc_now(:second), -2, :second))
+    |> Repo.update!()
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    assert has_element?(view, "#edit-message-#{message.id}", "Изменить")
+
+    view |> element("#edit-message-#{message.id}") |> render_click()
+    assert has_element?(view, "#edit-message-form-#{message.id}")
+
+    view
+    |> form("#edit-message-form-#{message.id}", body: "Отредактировано")
+    |> render_submit()
+
+    refute has_element?(view, "#edit-message-form-#{message.id}")
+    assert has_element?(view, "#messages-#{message.id}", "Отредактировано")
+    assert has_element?(view, "#messages-#{message.id} .message-edited-badge", "(изменено)")
+    refute has_element?(view, "#messages-#{message.id} .message-edited-badge-hover")
+    assert Repo.get!(Message, message.id).body == "Отредактировано"
+  end
+
+  test "an edited continuation message shows the edited badge only on hover", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, first} = Chat.create_message(Scope.for_user(user), general, %{body: "Первое"})
+    {:ok, second} = Chat.create_message(Scope.for_user(user), general, %{body: "Второе"})
+
+    first_inserted_at = DateTime.add(DateTime.utc_now(:second), -3, :second)
+    second_inserted_at = DateTime.add(DateTime.utc_now(:second), -2, :second)
+
+    first
+    |> Ecto.Changeset.change(inserted_at: first_inserted_at, updated_at: first_inserted_at)
+    |> Repo.update!()
+
+    second
+    |> Ecto.Changeset.change(inserted_at: second_inserted_at, updated_at: second_inserted_at)
+    |> Repo.update!()
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    refute has_element?(view, "#messages-#{second.id} .message-edited-badge-hover")
+
+    view |> element("#edit-message-#{second.id}") |> render_click()
+
+    view
+    |> form("#edit-message-form-#{second.id}", body: "Второе отредактировано")
+    |> render_submit()
+
+    assert has_element?(
+             view,
+             "#messages-#{second.id} .message-edited-badge-hover",
+             "(изменено)"
+           )
+  end
+
+  test "cancelling an edit leaves the message unchanged", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, message} = Chat.create_message(Scope.for_user(user), general, %{body: "Исходник"})
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    view |> element("#edit-message-#{message.id}") |> render_click()
+    assert has_element?(view, "#edit-message-form-#{message.id}")
+
+    view |> element(".message-edit-cancel") |> render_click()
+
+    refute has_element?(view, "#edit-message-form-#{message.id}")
+    assert has_element?(view, "#messages-#{message.id}", "Исходник")
+    refute has_element?(view, "#messages-#{message.id} .message-edited-badge")
+    assert Repo.get!(Message, message.id).body == "Исходник"
+  end
+
+  test "the edit action is unavailable once the delete window has elapsed", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, message} = Chat.create_message(Scope.for_user(user), general, %{body: "Просрочено"})
+
+    message
+    |> Ecto.Changeset.change(inserted_at: DateTime.add(DateTime.utc_now(:second), -600, :second))
+    |> Repo.update!()
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    refute has_element?(view, "#edit-message-#{message.id}")
+    refute has_element?(view, "#delete-message-#{message.id}")
+  end
+
+  test "the channel owner's edit action expires even though their delete action does not", %{
+    conn: conn,
+    user: owner
+  } do
+    assert {:ok, channel} =
+             Chat.create_channel(Scope.for_user(owner), %{
+               name: "owner-expired-edit",
+               kind: :public
+             })
+
+    {:ok, message} =
+      Chat.create_message(Scope.for_user(owner), channel, %{body: "Просрочено"})
+
+    message
+    |> Ecto.Changeset.change(inserted_at: DateTime.add(DateTime.utc_now(:second), -600, :second))
+    |> Repo.update!()
+
+    {:ok, view, _html} = live(log_in_user(conn, owner), ~p"/channels/#{channel.public_id}")
+
+    refute has_element?(view, "#edit-message-#{message.id}")
+    assert has_element?(view, "#delete-message-#{message.id}")
+  end
+
+  test "edit action is hidden for someone else's message, including for the channel owner", %{
+    conn: conn,
+    user: owner
+  } do
+    member = register_user(%{display_name: "Участник", login: "edit.member"})
+
+    assert {:ok, channel} =
+             Chat.create_channel(Scope.for_user(owner), %{name: "owned-edit-live", kind: :public})
+
+    assert {:ok, _} = Chat.join_channel(Scope.for_user(member), channel.id)
+
+    {:ok, message} =
+      Chat.create_message(Scope.for_user(member), channel, %{body: "Сообщение участника"})
+
+    {:ok, view, _html} = live(log_in_user(conn, owner), ~p"/channels/#{channel.public_id}")
+
+    refute has_element?(view, "#edit-message-#{message.id}")
+    assert has_element?(view, "#delete-message-#{message.id}")
+  end
+
+  test "the edit action carries a client-side expiry even for the channel owner's own message", %{
+    conn: conn,
+    user: owner
+  } do
+    assert {:ok, channel} =
+             Chat.create_channel(Scope.for_user(owner), %{name: "owner-own-edit", kind: :public})
+
+    {:ok, message} =
+      Chat.create_message(Scope.for_user(owner), channel, %{body: "Моё сообщение"})
+
+    {:ok, view, _html} = live(log_in_user(conn, owner), ~p"/channels/#{channel.public_id}")
+
+    edit_button =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#edit-message-#{message.id}")
+
+    assert LazyHTML.attribute(edit_button, "phx-hook") == ["MessageEditWindow"]
+    [deadline] = LazyHTML.attribute(edit_button, "data-edit-deadline")
+
+    expected =
+      message.inserted_at
+      |> DateTime.add(Chat.delete_window(), :millisecond)
+      |> DateTime.to_unix(:millisecond)
+
+    assert_in_delta String.to_integer(deadline), expected, 2_000
+
+    delete_actions =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#message-actions-#{message.id}")
+
+    assert LazyHTML.attribute(delete_actions, "phx-hook") == []
+  end
+
+  test "editing a message updates it for other viewers in real time", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    other_user = register_user(%{display_name: "Олег", login: "edit.watcher"})
+    {:ok, message} = Chat.create_message(Scope.for_user(user), general, %{body: "Исходник"})
+
+    {:ok, author_view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    {:ok, watcher_view, _html} =
+      live(log_in_user(build_conn(), other_user), ~p"/channels/#{general.public_id}")
+
+    author_view |> element("#edit-message-#{message.id}") |> render_click()
+
+    author_view
+    |> form("#edit-message-form-#{message.id}", body: "Обновлено для всех")
+    |> render_submit()
+
+    render(watcher_view)
+    assert has_element?(watcher_view, "#messages-#{message.id}", "Обновлено для всех")
+  end
+
   defp message_element_count(view) do
     view
     |> render()

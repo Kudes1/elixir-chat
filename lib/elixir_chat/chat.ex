@@ -541,6 +541,19 @@ defmodule ElixirChat.Chat do
     DateTime.add(inserted_at, @delete_window, :millisecond)
   end
 
+  def can_edit_message?(%User{} = user, %Message{} = message) do
+    own_message?(message, user) and within_delete_window?(message)
+  end
+
+  def edit_message(%Scope{user: user}, message_id, attrs) do
+    with {:ok, message} <- get_message(message_id),
+         :ok <- authorize_edit(message, user),
+         {:ok, updated} <- message |> Message.changeset(attrs) |> Repo.update() do
+      broadcast_message_updated(message.channel, updated)
+      {:ok, updated}
+    end
+  end
+
   def subscribe(channel_id), do: Phoenix.PubSub.subscribe(@pubsub, topic(channel_id))
   def subscribe_user(user_id), do: Phoenix.PubSub.subscribe(@pubsub, user_topic(user_id))
   def subscribe_catalog, do: Phoenix.PubSub.subscribe(@pubsub, "chat:catalog")
@@ -830,6 +843,10 @@ defmodule ElixirChat.Chat do
     if can_delete_message?(user, message, channel), do: :ok, else: {:error, :forbidden}
   end
 
+  defp authorize_edit(%Message{} = message, %User{} = user) do
+    if can_edit_message?(user, message), do: :ok, else: {:error, :forbidden}
+  end
+
   defp within_delete_window?(%Message{inserted_at: inserted_at}) do
     DateTime.diff(DateTime.utc_now(), inserted_at, :millisecond) <= @delete_window
   end
@@ -842,6 +859,20 @@ defmodule ElixirChat.Chat do
     case direct_for_channel(channel.id) do
       %DirectConversation{} = direct ->
         broadcast_direct(direct, {:direct_message_deleted, direct, message})
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp broadcast_message_updated(%Channel{purpose: :group} = channel, message) do
+    Phoenix.PubSub.broadcast(@pubsub, topic(channel.id), {:message_updated, message})
+  end
+
+  defp broadcast_message_updated(%Channel{purpose: :direct} = channel, message) do
+    case direct_for_channel(channel.id) do
+      %DirectConversation{} = direct ->
+        broadcast_direct(direct, {:direct_message_updated, direct, message})
 
       nil ->
         :ok

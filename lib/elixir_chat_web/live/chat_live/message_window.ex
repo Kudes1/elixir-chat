@@ -94,6 +94,15 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
     |> reset_first_message_group(new_oldest, overflow)
   end
 
+  def update_message(socket, %Message{} = message) do
+    if within_loaded_window?(socket, message) do
+      previous = previous_message(socket, message)
+      stream_insert(socket, :messages, message_item(message, previous))
+    else
+      socket
+    end
+  end
+
   def remove_message(socket, %Message{} = message) do
     in_window? = within_loaded_window?(socket, message)
     original_newest = socket.assigns.newest_message

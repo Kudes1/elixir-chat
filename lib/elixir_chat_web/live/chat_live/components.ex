@@ -482,14 +482,16 @@ defmodule ElixirChatWeb.ChatLive.Components do
   attr :item, :map, required: true
   attr :current_user, :any, required: true
   attr :channel, :any, required: true
+  attr :editing_message_id, :any, default: nil
 
   def message(assigns) do
     assigns =
-      assign(
-        assigns,
+      assigns
+      |> assign(
         :delete_deadline,
         delete_deadline_ms(assigns.item.message, assigns.channel, assigns.current_user)
       )
+      |> assign(:edit_deadline, edit_deadline_ms(assigns.item.message, assigns.current_user))
 
     ~H"""
     <article
@@ -524,8 +526,34 @@ defmodule ElixirChatWeb.ChatLive.Components do
             aria-label={"Упомянуть @#{@item.message.user.login}"}
           >@{@item.message.user.login}</button>
           <span class="message-meta-separator">·</span><time>{relative_time(@item.message.inserted_at)}</time>
+          <span
+            :if={@item.message.updated_at != @item.message.inserted_at}
+            class="message-edited-badge"
+          >(изменено)</span>
         </div>
-        <.message_body body={@item.message.body} />
+        <form
+          :if={@item.message.id == @editing_message_id}
+          id={"edit-message-form-#{@item.message.id}"}
+          phx-submit="save_edit_message"
+          phx-value-message-id={@item.message.id}
+          class="message-edit-form"
+        >
+          <textarea name="body" class="message-edit-input" autofocus>{@item.message.body}</textarea>
+          <div class="message-edit-actions">
+            <button type="submit" class="message-edit-save">Сохранить</button>
+            <button
+              type="button"
+              class="message-edit-cancel"
+              phx-click="cancel_edit_message"
+              phx-value-message-id={@item.message.id}
+            >Отмена</button>
+          </div>
+        </form>
+        <.message_body
+          :if={@item.message.id != @editing_message_id}
+          body={@item.message.body}
+          edited={@item.continuation? and @item.message.updated_at != @item.message.inserted_at}
+        />
       </div>
       <div
         :if={deletable?(@item.message, @channel, @current_user)}
@@ -551,6 +579,17 @@ defmodule ElixirChatWeb.ChatLive.Components do
           style="display: none;"
         >
           <button
+            :if={editable?(@item.message, @current_user)}
+            id={"edit-message-#{@item.message.id}"}
+            type="button"
+            class="message-menu-item"
+            role="menuitem"
+            phx-click="start_edit_message"
+            phx-value-message-id={@item.message.id}
+            phx-hook="MessageEditWindow"
+            data-edit-deadline={@edit_deadline}
+          >Изменить</button>
+          <button
             id={"delete-message-#{@item.message.id}"}
             type="button"
             class="message-menu-item message-menu-item-danger"
@@ -569,9 +608,19 @@ defmodule ElixirChatWeb.ChatLive.Components do
     ElixirChat.Chat.can_delete_message?(current_user, message, channel)
   end
 
+  def editable?(message, current_user) do
+    ElixirChat.Chat.can_edit_message?(current_user, message)
+  end
+
   defp delete_deadline_ms(message, channel, current_user) do
     if ElixirChat.Chat.own_message?(message, current_user) and
          not ElixirChat.Chat.owner_override?(channel, current_user) do
+      message |> ElixirChat.Chat.delete_deadline() |> DateTime.to_unix(:millisecond)
+    end
+  end
+
+  defp edit_deadline_ms(message, current_user) do
+    if ElixirChat.Chat.own_message?(message, current_user) do
       message |> ElixirChat.Chat.delete_deadline() |> DateTime.to_unix(:millisecond)
     end
   end
@@ -653,6 +702,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
   def relative_time(datetime), do: Calendar.strftime(datetime, "%H:%M")
 
   attr :body, :string, required: true
+  attr :edited, :boolean, default: false
 
   def message_body(assigns) do
     ~H"""
@@ -661,6 +711,10 @@ defmodule ElixirChatWeb.ChatLive.Components do
         :for={{kind, fragment} <- mention_fragments(@body)}
         class={kind == :mention && "message-mention"}
       >{fragment}</span>
+      <span
+        :if={@edited}
+        class="message-edited-badge message-edited-badge-hover"
+      >(изменено)</span>
     </p>
     """
   end

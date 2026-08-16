@@ -252,10 +252,42 @@ const MessageDeleteWindow = {
   },
 }
 
+const MessageEditWindow = {
+  mounted() {
+    this.scheduleHide()
+  },
+  updated() {
+    this.scheduleHide()
+  },
+  scheduleHide() {
+    if (this.timer) clearTimeout(this.timer)
+
+    const deadline = Number(this.el.dataset.editDeadline)
+    if (!deadline) return
+
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      this.el.remove()
+    } else {
+      this.timer = setTimeout(() => this.el.remove(), remaining)
+    }
+  },
+  destroyed() {
+    if (this.timer) clearTimeout(this.timer)
+  },
+}
+
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, MessageComposer, MessageList, SidebarSections, MessageDeleteWindow},
+  hooks: {
+    ...colocatedHooks,
+    MessageComposer,
+    MessageList,
+    SidebarSections,
+    MessageDeleteWindow,
+    MessageEditWindow,
+  },
 })
 
 // Show progress bar on live navigation and form submits
