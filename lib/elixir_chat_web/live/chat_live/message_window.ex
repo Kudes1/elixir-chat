@@ -56,6 +56,7 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
     |> assign(:oldest_message, List.first(messages))
     |> assign(:newest_message, List.last(messages))
     |> assign(:message_count, length(messages))
+    |> assign(:loaded_message_ids, MapSet.new(messages, & &1.id))
     |> assign(:has_older_messages?, has_older_messages?)
     |> assign(:has_newer_messages?, false)
     |> assign(:at_latest?, true)
@@ -67,12 +68,21 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
   def receive_message(%{assigns: %{at_latest?: true}} = socket, message),
     do: append_message(socket, message)
 
-  def receive_message(socket, _message), do: assign(socket, :pending_new_messages?, true)
-
-  def append_message(%{assigns: %{newest_message: %Message{id: id}}} = socket, %Message{id: id}),
-    do: socket
+  def receive_message(socket, message) do
+    if MapSet.member?(socket.assigns.loaded_message_ids, message.id),
+      do: socket,
+      else: assign(socket, :pending_new_messages?, true)
+  end
 
   def append_message(socket, message) do
+    if MapSet.member?(socket.assigns.loaded_message_ids, message.id) do
+      socket
+    else
+      do_append_message(socket, message)
+    end
+  end
+
+  defp do_append_message(socket, message) do
     previous_message = socket.assigns.newest_message
     overflow = max(socket.assigns.message_count + 1 - @message_window_size, 0)
 
@@ -85,6 +95,7 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
       )
 
     socket
+    |> remember_messages([message])
     |> assign(:oldest_message, new_oldest || message)
     |> assign(:newest_message, message)
     |> assign(:message_count, min(socket.assigns.message_count + 1, @message_window_size))
@@ -104,18 +115,23 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
   end
 
   def remove_message(socket, %Message{} = message) do
-    in_window? = within_loaded_window?(socket, message)
-    original_newest = socket.assigns.newest_message
+    in_window? = MapSet.member?(socket.assigns.loaded_message_ids, message.id)
 
-    {next, previous} =
-      if in_window? do
-        {next_message(socket, message), previous_message(socket, message)}
-      else
-        {nil, nil}
-      end
+    if in_window? do
+      do_remove_message(socket, message)
+    else
+      socket
+    end
+  end
+
+  defp do_remove_message(socket, message) do
+    original_newest = socket.assigns.newest_message
+    next = next_message(socket, message)
+    previous = previous_message(socket, message)
 
     socket
-    |> maybe_decrement_message_count(in_window?)
+    |> forget_message(message.id)
+    |> decrement_message_count()
     |> replace_oldest_if_removed(message, next)
     |> replace_newest_if_removed(message, previous)
     |> stream_delete(:messages, %{id: message.id})
@@ -123,10 +139,8 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
     |> reconcile_pending_after_removal(message, original_newest)
   end
 
-  defp maybe_decrement_message_count(socket, true),
+  defp decrement_message_count(socket),
     do: assign(socket, :message_count, max(socket.assigns.message_count - 1, 0))
-
-  defp maybe_decrement_message_count(socket, false), do: socket
 
   defp reconcile_pending_after_removal(socket, %Message{id: id}, %Message{id: id}), do: socket
 
@@ -221,6 +235,7 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
       end
 
     socket
+    |> remember_messages(messages)
     |> assign(:oldest_message, new_oldest)
     |> assign(:newest_message, newest_message)
     |> assign(:message_count, count)
@@ -256,6 +271,7 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
       )
 
     socket
+    |> remember_messages(messages)
     |> assign(:oldest_message, new_oldest || List.first(messages))
     |> assign(:newest_message, List.last(messages))
     |> assign(
@@ -287,6 +303,22 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
   defp reset_first_message_group(socket, message, _overflow) do
     stream_insert(socket, :messages, message_item(message, nil))
   end
+
+  defp remember_messages(socket, messages) do
+    ids = Enum.reduce(messages, socket.assigns.loaded_message_ids, &MapSet.put(&2, &1.id))
+
+    ids =
+      if MapSet.size(ids) > @message_window_size * 2 do
+        ids |> Enum.take(@message_window_size * 2) |> MapSet.new()
+      else
+        ids
+      end
+
+    assign(socket, :loaded_message_ids, ids)
+  end
+
+  defp forget_message(socket, id),
+    do: assign(socket, :loaded_message_ids, MapSet.delete(socket.assigns.loaded_message_ids, id))
 
   def message_items(messages, previous_message \\ nil) do
     messages

@@ -55,6 +55,7 @@ defmodule ElixirChatWeb.ChatLive do
      |> assign(:direct_search_form, direct_search_form())
      |> assign(:direct_search_results, [])
      |> assign(:direct_search_open?, false)
+     |> assign(:channel_create_open?, false)
      |> assign(:channel_catalog_open?, false)
      |> assign(:channel_settings_open?, false)
      |> assign(:channel_form, channel_form())
@@ -94,7 +95,10 @@ defmodule ElixirChatWeb.ChatLive do
         %{assigns: %{channel: channel}} = socket
       )
       when not is_nil(channel) do
-    attrs = %{body: Map.get(params, "body", "")}
+    attrs = %{
+      body: Map.get(params, "body", ""),
+      client_message_id: Map.get(params, "client_message_id")
+    }
 
     case Chat.create_message(socket.assigns.current_scope, channel, attrs) do
       {:ok, message} ->
@@ -107,7 +111,8 @@ defmodule ElixirChatWeb.ChatLive do
             MessageWindow.load_latest_messages(socket)
           end
 
-        {:noreply, push_event(socket, "message_sent", %{})}
+        {:noreply,
+         push_event(socket, "message_sent", %{client_message_id: message.client_message_id})}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign(socket, :message_form, to_form(changeset, as: :message))}
@@ -120,16 +125,35 @@ defmodule ElixirChatWeb.ChatLive do
 
       {:error, :forbidden} ->
         {:noreply, recover_from_missing_conversation(socket, conversation_kind(socket))}
+
+      {:error, :idempotency_conflict} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "Не удалось повторно отправить сообщение: идентификатор уже использован."
+         )}
     end
   end
 
   def handle_event("send_message", _params, socket), do: {:noreply, socket}
 
+  def handle_event("open_channel_create", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:channel_create_open?, true)
+     |> assign(:channel_catalog_open?, false)
+     |> assign(:channel_form, channel_form())}
+  end
+
+  def handle_event("close_channel_create", _params, socket),
+    do: {:noreply, assign(socket, :channel_create_open?, false)}
+
   def handle_event("open_channel_catalog", _params, socket) do
     {:noreply,
      socket
      |> assign(:channel_catalog_open?, true)
-     |> assign(:channel_form, channel_form())
+     |> assign(:channel_create_open?, false)
      |> refresh_available_channels()}
   end
 
@@ -146,7 +170,7 @@ defmodule ElixirChatWeb.ChatLive do
       {:ok, channel} ->
         {:noreply,
          socket
-         |> assign(:channel_catalog_open?, false)
+         |> assign(:channel_create_open?, false)
          |> refresh_channels()
          |> push_patch(to: ~p"/channels/#{channel.public_id}")}
 
@@ -571,6 +595,7 @@ defmodule ElixirChatWeb.ChatLive do
     |> assign(:oldest_message, nil)
     |> assign(:newest_message, nil)
     |> assign(:message_count, 0)
+    |> assign(:loaded_message_ids, MapSet.new())
     |> assign(:has_older_messages?, false)
     |> assign(:has_newer_messages?, false)
     |> assign(:at_latest?, true)
@@ -679,7 +704,9 @@ defmodule ElixirChatWeb.ChatLive do
   defp channel_error(:not_found), do: "Сообщение не найдено."
   defp channel_error(_reason), do: "Не удалось изменить канал."
 
-  def empty_message_form, do: to_form(%{"body" => ""}, as: :message)
+  def empty_message_form,
+    do: to_form(%{"body" => "", "client_message_id" => Ecto.UUID.generate()}, as: :message)
+
   defp direct_search_form(query \\ ""), do: to_form(%{"query" => query}, as: :direct_search)
   defp invite_search_form(query \\ ""), do: to_form(%{"query" => query}, as: :invite_search)
 

@@ -1,5 +1,12 @@
 <Layouts.app flash={@flash} current_scope={@current_scope}>
-  <main id="chat-shell" class="chat-shell">
+  <main
+    id="chat-shell"
+    class="chat-shell"
+    phx-hook="SidebarResize"
+    data-sidebar-default-width="264"
+    data-sidebar-min-width="220"
+    data-sidebar-max-width="480"
+  >
     <.sidebar
       channels={@channels}
       channel={@channel}
@@ -8,11 +15,25 @@
       direct_search_open?={@direct_search_open?}
       direct_search_form={@direct_search_form}
       direct_search_results={@direct_search_results}
+      channel_create_open?={@channel_create_open?}
       channel_catalog_open?={@channel_catalog_open?}
       current_user={@current_scope.user}
       visitor_name={@visitor_name}
       online_user_ids={@online_user_ids}
     />
+    <div
+      id="sidebar-resizer"
+      class="sidebar-resizer"
+      role="separator"
+      aria-label="Изменить ширину навигации"
+      aria-controls="chat-sidebar"
+      aria-orientation="vertical"
+      aria-valuemin="220"
+      aria-valuemax="480"
+      aria-valuenow="264"
+      data-sidebar-resizer
+    >
+    </div>
     <button
       id="sidebar-overlay"
       type="button"
@@ -69,7 +90,12 @@
         </button>
       </div>
 
-      <.composer form={@message_form} channel={@channel} other_user={@current_other_user} />
+      <.composer
+        form={@message_form}
+        channel={@channel}
+        other_user={@current_other_user}
+        current_user_id={@current_scope.user.id}
+      />
     </section>
 
     <section :if={is_nil(@channel)} id="empty-chat" class="conversation empty-chat">
@@ -89,11 +115,8 @@
       </div>
     </section>
 
-    <.channel_catalog
-      :if={@channel_catalog_open?}
-      form={@channel_form}
-      channels={@available_channels}
-    />
+    <.channel_create :if={@channel_create_open?} form={@channel_form} />
+    <.channel_catalog :if={@channel_catalog_open?} channels={@available_channels} />
     <.channel_settings
       :if={@channel_settings_open? && @channel && is_nil(@direct_conversation)}
       channel={@channel}

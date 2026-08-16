@@ -2,6 +2,11 @@ import Config
 
 config :elixir_chat, :env, :test
 
+config :elixir_chat, ElixirChat.OutboxDispatcher,
+  interval: 60_000,
+  batch_size: 50,
+  synchronous_wake_up: true
+
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used

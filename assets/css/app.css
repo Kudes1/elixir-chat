@@ -412,8 +412,11 @@ button {
 }
 
 .chat-shell {
+  --orbit-sidebar-width: 264px;
+
+  position: relative;
   display: grid;
-  grid-template-columns: 264px minmax(0, 1fr);
+  grid-template-columns: var(--orbit-sidebar-width) minmax(0, 1fr);
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
@@ -429,6 +432,40 @@ button {
   color: var(--orbit-text-muted);
   border-right: 1px solid var(--orbit-border);
   background: var(--orbit-sidebar);
+}
+
+.sidebar-resizer {
+  position: absolute;
+  z-index: 20;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--orbit-sidebar-width) - 6px);
+  width: 12px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resizer::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  content: "";
+  background: transparent;
+  transform: translateX(-50%);
+  transition: background-color 120ms ease;
+}
+
+.sidebar-resizer:hover::after,
+.sidebar-resizing .sidebar-resizer::after {
+  background: var(--orbit-accent);
+}
+
+.chat-shell.sidebar-resizing,
+.chat-shell.sidebar-resizing * {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .sidebar-overlay,
@@ -1309,6 +1346,10 @@ button {
     transform: translateX(-100%);
     transition: transform 180ms ease;
     box-shadow: 16px 0 36px rgb(0 0 0 / 32%);
+  }
+
+  .sidebar-resizer {
+    display: none;
   }
 
   .chat-sidebar.sidebar-open {

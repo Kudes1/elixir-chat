@@ -48,6 +48,40 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const MessageComposer = {
   mounted() {
+    this.hiddenInput = this.el.form?.querySelector("[name='message[client_message_id]']")
+    this.draftKey = () => `orbit:message-draft:v1:${this.el.dataset.userId}:${this.el.dataset.channelId}`
+    this.storageKey = this.draftKey()
+    this.newId = () => {
+      if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+
+      const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16))
+      bytes[6] = (bytes[6] & 0x0f) | 0x40
+      bytes[8] = (bytes[8] & 0x3f) | 0x80
+      const hex = [...bytes].map(byte => byte.toString(16).padStart(2, "0")).join("")
+      return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+    }
+    this.readDraft = () => {
+      try {
+        return JSON.parse(sessionStorage.getItem(this.storageKey) || "null")
+      } catch (_error) {
+        return null
+      }
+    }
+    this.saveDraft = () => {
+      if (!this.hiddenInput) return
+      sessionStorage.setItem(this.storageKey, JSON.stringify({
+        clientMessageId: this.hiddenInput.value,
+        body: this.el.value,
+      }))
+    }
+    this.restoreDraft = resetBody => {
+      const draft = this.readDraft()
+      const id = draft?.clientMessageId || this.hiddenInput?.value || this.newId()
+      if (this.hiddenInput) this.hiddenInput.value = id
+      if (draft?.body !== undefined) this.el.value = draft.body
+      else if (resetBody) this.el.value = ""
+      this.saveDraft()
+    }
     this.resize = () => {
       this.el.style.height = "auto"
       this.el.style.height = `${Math.min(this.el.scrollHeight, 176)}px`
@@ -60,10 +94,18 @@ const MessageComposer = {
       this.el.form?.requestSubmit()
     }
 
-    this.el.addEventListener("input", this.resize)
+    this.onInput = () => {
+      this.resize()
+      this.saveDraft()
+    }
+    this.el.addEventListener("input", this.onInput)
     this.el.addEventListener("keydown", this.submitOnEnter)
-    this.handleEvent("message_sent", () => {
+    this.handleEvent("message_sent", ({client_message_id: acknowledgedId}) => {
+      const draft = this.readDraft()
+      if (!this.hiddenInput || acknowledgedId !== draft?.clientMessageId) return
       this.el.value = ""
+      this.hiddenInput.value = this.newId()
+      this.saveDraft()
       this.resize()
       this.el.focus()
     })
@@ -81,13 +123,19 @@ const MessageComposer = {
       this.el.focus()
       this.resize()
     })
+    this.restoreDraft()
     this.resize()
   },
   updated() {
+    const nextStorageKey = this.draftKey()
+    const conversationChanged = nextStorageKey !== this.storageKey
+    this.storageKey = nextStorageKey
+    this.hiddenInput = this.el.form?.querySelector("[name='message[client_message_id]']")
+    this.restoreDraft(conversationChanged)
     this.resize()
   },
   destroyed() {
-    this.el.removeEventListener("input", this.resize)
+    this.el.removeEventListener("input", this.onInput)
     this.el.removeEventListener("keydown", this.submitOnEnter)
   },
 }
@@ -227,6 +275,123 @@ const SidebarSections = {
   },
 }
 
+const SidebarResize = {
+  mounted() {
+    this.storageKey = "orbit:sidebar-width:v1"
+    this.defaultWidth = Number(this.el.dataset.sidebarDefaultWidth) || 264
+    this.minWidth = Number(this.el.dataset.sidebarMinWidth) || 220
+    this.maxWidth = Number(this.el.dataset.sidebarMaxWidth) || 480
+    this.pointerId = null
+    this.activeResizer = null
+
+    this.normalizedWidth = width => {
+      return Math.min(this.maxWidth, Math.max(this.minWidth, Math.round(width)))
+    }
+
+    this.viewportMaxWidth = () => {
+      return Math.max(this.minWidth, Math.min(this.maxWidth, Math.floor(window.innerWidth / 2)))
+    }
+
+    this.clampedWidth = width => {
+      return Math.min(this.viewportMaxWidth(), this.normalizedWidth(width))
+    }
+
+    this.readWidth = value => {
+      try {
+        const stored = value === undefined ? localStorage.getItem(this.storageKey) : value
+        if (stored === null || stored.trim() === "") return this.defaultWidth
+
+        const width = Number(stored)
+        return Number.isFinite(width) ? this.normalizedWidth(width) : this.defaultWidth
+      } catch (_error) {
+        return this.defaultWidth
+      }
+    }
+
+    this.saveWidth = () => {
+      try {
+        localStorage.setItem(this.storageKey, String(this.preferredWidth))
+      } catch (_error) {
+        // Resizing still works when storage is unavailable.
+      }
+    }
+
+    this.applyWidth = () => {
+      const width = this.clampedWidth(this.preferredWidth)
+      const resizer = this.el.querySelector("[data-sidebar-resizer]")
+
+      this.el.style.setProperty("--orbit-sidebar-width", `${width}px`)
+      if (this.pointerId !== null) this.el.classList.add("sidebar-resizing")
+
+      if (resizer) {
+        resizer.setAttribute("aria-valuemax", String(this.viewportMaxWidth()))
+        resizer.setAttribute("aria-valuenow", String(width))
+      }
+    }
+
+    this.handlePointerDown = event => {
+      const resizer = event.target.closest("[data-sidebar-resizer]")
+      if (!resizer || !this.el.contains(resizer) || (event.pointerType === "mouse" && event.button !== 0)) return
+
+      event.preventDefault()
+      this.pointerId = event.pointerId
+      this.activeResizer = resizer
+      this.el.classList.add("sidebar-resizing")
+      resizer.setPointerCapture(event.pointerId)
+    }
+
+    this.handlePointerMove = event => {
+      if (event.pointerId !== this.pointerId) return
+
+      event.preventDefault()
+      const shellLeft = this.el.getBoundingClientRect().left
+      this.preferredWidth = this.clampedWidth(event.clientX - shellLeft)
+      this.applyWidth()
+    }
+
+    this.finishResize = event => {
+      if (event.pointerId !== this.pointerId) return
+
+      if (this.activeResizer?.hasPointerCapture(event.pointerId)) {
+        this.activeResizer.releasePointerCapture(event.pointerId)
+      }
+
+      this.pointerId = null
+      this.activeResizer = null
+      this.el.classList.remove("sidebar-resizing")
+      this.saveWidth()
+    }
+
+    this.handleResize = () => this.applyWidth()
+    this.handleStorage = event => {
+      if (event.key !== this.storageKey) return
+      this.preferredWidth = this.readWidth(event.newValue)
+      this.applyWidth()
+    }
+
+    this.preferredWidth = this.readWidth()
+    this.applyWidth()
+    this.el.addEventListener("pointerdown", this.handlePointerDown)
+    this.el.addEventListener("pointermove", this.handlePointerMove)
+    this.el.addEventListener("pointerup", this.finishResize)
+    this.el.addEventListener("pointercancel", this.finishResize)
+    window.addEventListener("resize", this.handleResize)
+    window.addEventListener("storage", this.handleStorage)
+  },
+  updated() {
+    this.applyWidth()
+  },
+  destroyed() {
+    this.el.removeEventListener("pointerdown", this.handlePointerDown)
+    this.el.removeEventListener("pointermove", this.handlePointerMove)
+    this.el.removeEventListener("pointerup", this.finishResize)
+    this.el.removeEventListener("pointercancel", this.finishResize)
+    window.removeEventListener("resize", this.handleResize)
+    window.removeEventListener("storage", this.handleStorage)
+    this.el.classList.remove("sidebar-resizing")
+  },
+}
+
 const MessageDeleteWindow = {
   mounted() {
     this.scheduleHide()
@@ -285,6 +450,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     MessageComposer,
     MessageList,
     SidebarSections,
+    SidebarResize,
     MessageDeleteWindow,
     MessageEditWindow,
   },

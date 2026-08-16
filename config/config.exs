@@ -15,6 +15,11 @@ config :elixir_chat, ElixirChat.RepoDiagnostics,
   slow_query_ms: 500,
   queue_warn_ms: 100
 
+config :elixir_chat, ElixirChat.OutboxDispatcher,
+  interval: 1_000,
+  batch_size: 50,
+  retention: :timer.hours(24 * 7)
+
 # Configure the endpoint
 config :elixir_chat, ElixirChatWeb.Endpoint,
   url: [host: "localhost"],

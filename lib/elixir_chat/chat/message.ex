@@ -7,6 +7,7 @@ defmodule ElixirChat.Chat.Message do
   schema "messages" do
     field :author_name, :string
     field :body, :string
+    field :client_message_id, Ecto.UUID, autogenerate: true
 
     belongs_to :channel, ElixirChat.Chat.Channel
     belongs_to :user, ElixirChat.Accounts.User
@@ -16,18 +17,19 @@ defmodule ElixirChat.Chat.Message do
 
   def changeset(message, attrs) do
     message
-    |> cast(attrs, [:body])
+    |> cast(attrs, [:body, :client_message_id])
     |> update_change(:body, &String.trim/1)
-    |> validate_required([:author_name, :body, :channel_id, :user_id])
+    |> validate_required([:author_name, :body, :client_message_id, :channel_id, :user_id])
     |> validate_length(:author_name, min: 2, max: 40)
     |> validate_length(:body, min: 1, max: 4_000)
     |> foreign_key_constraint(:channel_id)
     |> foreign_key_constraint(:user_id)
+    |> unique_constraint([:user_id, :client_message_id])
   end
 
   def historical_changeset(message, attrs) do
     message
-    |> cast(attrs, [:author_name, :body])
+    |> cast(attrs, [:author_name, :body, :client_message_id])
     |> update_change(:author_name, &String.trim/1)
     |> update_change(:body, &String.trim/1)
     |> validate_required([:author_name, :body, :channel_id])

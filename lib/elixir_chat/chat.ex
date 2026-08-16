@@ -6,7 +6,7 @@ defmodule ElixirChat.Chat do
   alias Ecto.Multi
   alias ElixirChat.Accounts
   alias ElixirChat.Accounts.{Scope, User}
-  alias ElixirChat.Chat.{Channel, ChannelMembership, DirectConversation, Message}
+  alias ElixirChat.Chat.{Channel, ChannelMembership, DirectConversation, Message, Outbox}
   alias ElixirChat.Repo
 
   @pubsub ElixirChat.PubSub
@@ -513,10 +513,23 @@ defmodule ElixirChat.Chat do
 
   def delete_message(%Scope{user: user}, message_id) do
     with {:ok, message} <- get_message(message_id),
-         :ok <- authorize_delete(message, message.channel, user),
-         {:ok, deleted} <- Repo.delete(message) do
-      broadcast_message_deleted(message.channel, deleted)
-      {:ok, deleted}
+         :ok <- authorize_delete(message, message.channel, user) do
+      direct = direct_snapshot(message.channel)
+
+      Multi.new()
+      |> Multi.delete(:message, message)
+      |> Multi.insert(:outbox_event, fn %{message: deleted} ->
+        Outbox.event_changeset(message_event_type(message.channel, :deleted), deleted, direct)
+      end)
+      |> Repo.transaction()
+      |> case do
+        {:ok, %{message: deleted}} ->
+          ElixirChat.OutboxDispatcher.wake_up()
+          {:ok, deleted}
+
+        {:error, _operation, reason, _changes} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -547,10 +560,24 @@ defmodule ElixirChat.Chat do
 
   def edit_message(%Scope{user: user}, message_id, attrs) do
     with {:ok, message} <- get_message(message_id),
-         :ok <- authorize_edit(message, user),
-         {:ok, updated} <- message |> Message.changeset(attrs) |> Repo.update() do
-      broadcast_message_updated(message.channel, updated)
-      {:ok, updated}
+         :ok <- authorize_edit(message, user) do
+      direct = direct_snapshot(message.channel)
+
+      Multi.new()
+      |> Multi.update(:message, Message.changeset(message, attrs))
+      |> Multi.insert(:outbox_event, fn %{message: updated} ->
+        updated = %{updated | channel: message.channel, user: message.user}
+        Outbox.event_changeset(message_event_type(message.channel, :updated), updated, direct)
+      end)
+      |> Repo.transaction()
+      |> case do
+        {:ok, %{message: updated}} ->
+          ElixirChat.OutboxDispatcher.wake_up()
+          {:ok, %{updated | channel: message.channel, user: message.user}}
+
+        {:error, _operation, reason, _changes} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -634,49 +661,94 @@ defmodule ElixirChat.Chat do
   defp authorize_conversation(_scope, _channel), do: {:error, :forbidden}
 
   defp persist_message(%Scope{user: user}, {:public, channel}, attrs) do
-    case insert_message(user, channel, attrs) do
-      {:ok, message} ->
-        Phoenix.PubSub.broadcast(@pubsub, topic(channel.id), {:message_created, message})
-        {:ok, message}
-
-      {:error, changeset} ->
-        {:error, changeset}
-    end
+    persist_message_transaction(user, channel, attrs, nil)
   end
 
   defp persist_message(%Scope{user: user}, {:direct, direct}, attrs) do
     now = DateTime.utc_now()
-    changeset = message_changeset(user, direct.channel, attrs)
+    persist_message_transaction(user, direct.channel, attrs, {direct, now})
+  end
+
+  defp persist_message_transaction(user, channel, attrs, direct_info) do
+    changeset = message_changeset(user, channel, attrs)
+    normalized_body = Ecto.Changeset.get_field(changeset, :body)
+    client_message_id = Ecto.Changeset.get_field(changeset, :client_message_id)
 
     Multi.new()
-    |> Multi.insert(:message, changeset)
-    |> Multi.update(:direct, DirectConversation.activity_changeset(direct, now))
+    |> Multi.run(:message_result, fn repo, _changes ->
+      case repo.get_by(Message, user_id: user.id, client_message_id: client_message_id) do
+        nil ->
+          case repo.insert(changeset) do
+            {:ok, message} -> {:ok, {with_message_associations(message, user, channel), true}}
+            {:error, reason} -> {:error, reason}
+          end
+
+        message ->
+          message = with_message_associations(message, user, channel)
+
+          if message.channel_id == channel.id and message.body == normalized_body,
+            do: {:ok, {message, false}},
+            else: {:error, :idempotency_conflict}
+      end
+    end)
+    |> maybe_update_direct(direct_info)
+    |> Multi.run(:outbox_event, fn repo, changes ->
+      {message, created?} = changes.message_result
+
+      if created? do
+        direct = if direct_info, do: Map.fetch!(changes, :direct), else: nil
+        changeset = Outbox.event_changeset(message_event_type(channel, :created), message, direct)
+        repo.insert(changeset)
+      else
+        {:ok, nil}
+      end
+    end)
     |> Repo.transaction()
     |> case do
-      {:ok, %{message: message, direct: direct}} ->
-        message = with_message_associations(message, user, direct.channel)
-        broadcast_direct(direct, {:direct_message_created, direct, message})
+      {:ok, %{message_result: {message, true}}} ->
+        ElixirChat.OutboxDispatcher.wake_up()
         {:ok, message}
 
-      {:error, :message, changeset, _changes} ->
-        {:error, changeset}
+      {:ok, %{message_result: {message, false}}} ->
+        {:ok, message}
+
+      {:error, :message_result, %Ecto.Changeset{} = reason, _changes} ->
+        recover_idempotent_insert(user, channel, client_message_id, normalized_body, reason)
 
       {:error, _operation, reason, _changes} ->
         {:error, reason}
     end
   end
 
-  defp insert_message(user, channel, attrs) do
-    user
-    |> message_changeset(channel, attrs)
-    |> Repo.insert()
-    |> case do
-      {:ok, message} -> {:ok, with_message_associations(message, user, channel)}
-      error -> error
+  defp maybe_update_direct(multi, nil), do: multi
+
+  defp maybe_update_direct(multi, {direct, now}) do
+    Multi.run(multi, :direct, fn repo, %{message_result: {_message, created?}} ->
+      if created?,
+        do: repo.update(DirectConversation.activity_changeset(direct, now)),
+        else: {:ok, direct}
+    end)
+  end
+
+  defp recover_idempotent_insert(user, channel, client_message_id, body, changeset) do
+    case Repo.get_by(Message, user_id: user.id, client_message_id: client_message_id) do
+      %Message{channel_id: channel_id, body: ^body} = message when channel_id == channel.id ->
+        {:ok, with_message_associations(message, user, channel)}
+
+      %Message{} ->
+        {:error, :idempotency_conflict}
+
+      nil ->
+        {:error, changeset}
     end
   end
 
   defp message_changeset(user, channel, attrs) do
+    client_message_id =
+      attrs[:client_message_id] || attrs["client_message_id"] || Ecto.UUID.generate()
+
+    attrs = Map.put(attrs, :client_message_id, client_message_id)
+
     %Message{channel_id: channel.id, user_id: user.id, author_name: user.display_name}
     |> Message.changeset(attrs)
   end
@@ -851,35 +923,21 @@ defmodule ElixirChat.Chat do
     DateTime.diff(DateTime.utc_now(), inserted_at, :millisecond) <= @delete_window
   end
 
-  defp broadcast_message_deleted(%Channel{purpose: :group} = channel, message) do
-    Phoenix.PubSub.broadcast(@pubsub, topic(channel.id), {:message_deleted, message})
+  defp message_event_type(%Channel{purpose: :group}, :created), do: :message_created
+  defp message_event_type(%Channel{purpose: :group}, :updated), do: :message_updated
+  defp message_event_type(%Channel{purpose: :group}, :deleted), do: :message_deleted
+
+  defp message_event_type(%Channel{purpose: :direct}, :created), do: :direct_message_created
+  defp message_event_type(%Channel{purpose: :direct}, :updated), do: :direct_message_updated
+  defp message_event_type(%Channel{purpose: :direct}, :deleted), do: :direct_message_deleted
+
+  defp direct_snapshot(%Channel{purpose: :group}), do: nil
+
+  defp direct_snapshot(%Channel{purpose: :direct, id: channel_id}) do
+    DirectConversation
+    |> Repo.get_by!(channel_id: channel_id)
+    |> Repo.preload([:channel, :first_user, :second_user])
   end
-
-  defp broadcast_message_deleted(%Channel{purpose: :direct} = channel, message) do
-    case direct_for_channel(channel.id) do
-      %DirectConversation{} = direct ->
-        broadcast_direct(direct, {:direct_message_deleted, direct, message})
-
-      nil ->
-        :ok
-    end
-  end
-
-  defp broadcast_message_updated(%Channel{purpose: :group} = channel, message) do
-    Phoenix.PubSub.broadcast(@pubsub, topic(channel.id), {:message_updated, message})
-  end
-
-  defp broadcast_message_updated(%Channel{purpose: :direct} = channel, message) do
-    case direct_for_channel(channel.id) do
-      %DirectConversation{} = direct ->
-        broadcast_direct(direct, {:direct_message_updated, direct, message})
-
-      nil ->
-        :ok
-    end
-  end
-
-  defp direct_for_channel(channel_id), do: Repo.get_by(DirectConversation, channel_id: channel_id)
 
   defp protect_general_update(%Channel{is_general: false}, _attrs), do: :ok
 

@@ -277,6 +277,17 @@ defmodule ElixirChatWeb.ChatLiveTest do
     {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
     assert has_element?(view, "#chat-sidebar")
+
+    assert has_element?(
+             view,
+             "#chat-shell[phx-hook='SidebarResize'][data-sidebar-default-width='264'][data-sidebar-min-width='220'][data-sidebar-max-width='480']"
+           )
+
+    assert has_element?(
+             view,
+             "#sidebar-resizer[role='separator'][aria-controls='chat-sidebar'][aria-orientation='vertical'][aria-valuemin='220'][aria-valuemax='480'][aria-valuenow='264'][data-sidebar-resizer]"
+           )
+
     assert has_element?(view, "#workspace-brand", "Рабочее пространство")
     assert has_element?(view, "#workspace-brand", "Orbit")
     assert has_element?(view, "#channel-navigation[aria-label='Навигация чата']", "Каналы")
@@ -673,15 +684,25 @@ defmodule ElixirChatWeb.ChatLiveTest do
     end)
   end
 
-  test "creates a private channel from the accessible catalog", %{
+  test "creates a private channel from the dedicated creation dialog", %{
     conn: conn,
     general: general,
     user: user
   } do
     {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
 
-    view |> element("#open-channel-catalog") |> render_click()
-    assert has_element?(view, "#channel-catalog[role='dialog']")
+    assert has_element?(view, "#open-channel-create[aria-label='Создать канал']")
+    assert has_element?(view, "#open-channel-catalog .hero-book-open")
+
+    view |> element("#open-channel-create") |> render_click()
+    assert has_element?(view, "#channel-create[role='dialog']")
+    assert has_element?(view, "#create-channel-form")
+    refute has_element?(view, "#channel-catalog")
+    refute has_element?(view, "#available-channel-list")
+
+    view |> element("#close-channel-create") |> render_click()
+    refute has_element?(view, "#channel-create")
+    view |> element("#open-channel-create") |> render_click()
 
     view
     |> form("#create-channel-form",
@@ -711,7 +732,15 @@ defmodule ElixirChatWeb.ChatLiveTest do
     refute has_element?(view, "#channel-#{channel.id}")
 
     view |> element("#open-channel-catalog") |> render_click()
+    assert has_element?(view, "#channel-catalog[role='dialog']")
     assert has_element?(view, "#available-channel-#{channel.id}", "Объявления")
+    refute has_element?(view, "#channel-create")
+    refute has_element?(view, "#create-channel-form")
+
+    view |> element("#close-channel-catalog") |> render_click()
+    refute has_element?(view, "#channel-catalog")
+    view |> element("#open-channel-catalog") |> render_click()
+
     view |> element("#join-channel-#{channel.id}") |> render_click()
 
     assert_patch(view, ~p"/channels/#{channel.public_id}")

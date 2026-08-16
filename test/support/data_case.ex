@@ -37,6 +37,12 @@ defmodule ElixirChat.DataCase do
   """
   def setup_sandbox(tags) do
     pid = Ecto.Adapters.SQL.Sandbox.start_owner!(ElixirChat.Repo, shared: not tags[:async])
+    dispatcher = Process.whereis(ElixirChat.OutboxDispatcher)
+
+    if dispatcher do
+      Ecto.Adapters.SQL.Sandbox.allow(ElixirChat.Repo, pid, dispatcher)
+    end
+
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
   end
 

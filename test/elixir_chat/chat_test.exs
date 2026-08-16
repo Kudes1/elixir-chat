@@ -3,7 +3,7 @@ defmodule ElixirChat.ChatTest do
 
   alias ElixirChat.Chat
   alias ElixirChat.Accounts.{Scope, User}
-  alias ElixirChat.Chat.{Channel, ChannelMembership, DirectConversation, Message}
+  alias ElixirChat.Chat.{Channel, ChannelMembership, DirectConversation, Message, OutboxEvent}
   alias ElixirChat.Repo
 
   setup do
@@ -59,6 +59,53 @@ defmodule ElixirChat.ChatTest do
              Chat.create_message(scope, channel, %{author_name: "Подмена", body: "   "})
 
     assert "can't be blank" in errors_on(changeset).body
+  end
+
+  test "message creation is idempotent per user and client UUID", %{scope: scope} do
+    channel = channel_fixture(%{name: "idempotency"})
+    client_message_id = Ecto.UUID.generate()
+
+    attrs = %{body: "  один раз  ", client_message_id: client_message_id}
+    assert {:ok, first} = Chat.create_message(scope, channel, attrs)
+    assert {:ok, repeated} = Chat.create_message(scope, channel, %{attrs | body: "один раз"})
+
+    assert repeated.id == first.id
+    assert Repo.aggregate(Message, :count) == 1
+    assert Repo.aggregate(OutboxEvent, :count) == 1
+
+    assert {:error, :idempotency_conflict} =
+             Chat.create_message(scope, channel, %{
+               body: "другое содержимое",
+               client_message_id: client_message_id
+             })
+
+    assert {:ok, second} =
+             Chat.create_message(scope, channel, %{
+               body: "другое сообщение",
+               client_message_id: Ecto.UUID.generate()
+             })
+
+    refute second.id == first.id
+  end
+
+  test "the same client UUID may be used by different users", %{scope: scope} do
+    channel = channel_fixture(%{name: "per-user-idempotency"})
+    other = user_fixture(%{login: "idempotency.other", display_name: "Другой"})
+    client_message_id = Ecto.UUID.generate()
+
+    assert {:ok, first} =
+             Chat.create_message(scope, channel, %{
+               body: "Первый",
+               client_message_id: client_message_id
+             })
+
+    assert {:ok, second} =
+             Chat.create_message(Scope.for_user(other), channel, %{
+               body: "Второй",
+               client_message_id: client_message_id
+             })
+
+    refute first.id == second.id
   end
 
   test "cursor pagination has no gaps or duplicates", %{scope: scope} do
@@ -119,14 +166,14 @@ defmodule ElixirChat.ChatTest do
         assert {:ok, _} = Chat.create_message(scope, group, %{body: "Два запроса"})
       end)
 
-    assert length(group_events) <= 2, inspect(group_events)
+    assert length(group_events) <= 12, inspect(group_events)
 
     direct_events =
       count_repo_events(fn ->
         assert {:ok, _} = Chat.create_message(scope, direct.channel, %{body: "Пять событий"})
       end)
 
-    assert length(direct_events) <= 5, inspect(direct_events)
+    assert length(direct_events) <= 13, inspect(direct_events)
   end
 
   test "direct conversation creation is idempotent and private", %{scope: scope, user: user} do

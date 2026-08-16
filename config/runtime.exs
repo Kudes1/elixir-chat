@@ -11,6 +11,13 @@ config :elixir_chat, ElixirChat.RepoDiagnostics,
   slow_query_ms: parse_positive_integer.("DB_SLOW_QUERY_MS", "500"),
   queue_warn_ms: parse_positive_integer.("DB_QUEUE_WARN_MS", "100")
 
+outbox_default_interval = if config_env() == :test, do: "60000", else: "1000"
+
+config :elixir_chat, ElixirChat.OutboxDispatcher,
+  interval: parse_positive_integer.("OUTBOX_POLL_INTERVAL_MS", outbox_default_interval),
+  batch_size: parse_positive_integer.("OUTBOX_BATCH_SIZE", "50"),
+  retention: parse_positive_integer.("OUTBOX_RETENTION_DAYS", "7") * :timer.hours(24)
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration

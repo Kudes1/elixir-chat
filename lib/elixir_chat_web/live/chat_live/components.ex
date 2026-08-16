@@ -8,6 +8,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
   attr :direct_search_open?, :boolean, required: true
   attr :direct_search_form, :any, required: true
   attr :direct_search_results, :list, required: true
+  attr :channel_create_open?, :boolean, required: true
   attr :channel_catalog_open?, :boolean, required: true
   attr :current_user, :any, required: true
   attr :visitor_name, :string, required: true
@@ -42,14 +43,26 @@ defmodule ElixirChatWeb.ChatLive.Components do
               <span class="sidebar-section-title">Каналы</span>
             </button>
             <button
+              id="open-channel-create"
+              type="button"
+              class="sidebar-section-action"
+              phx-click="open_channel_create"
+              aria-label="Создать канал"
+              title="Создать канал"
+              aria-expanded={to_string(@channel_create_open?)}
+            >
+              <.icon name="hero-plus" class="size-4" />
+            </button>
+            <button
               id="open-channel-catalog"
               type="button"
               class="sidebar-section-action"
               phx-click="open_channel_catalog"
               aria-label="Открыть каталог каналов"
+              title="Каталог каналов"
               aria-expanded={to_string(@channel_catalog_open?)}
             >
-              <.icon name="hero-plus" class="size-4" />
+              <.icon name="hero-book-open" class="size-4" />
             </button>
           </div>
           <div id="channel-list" class="channel-list" data-sidebar-content="channels">
@@ -239,25 +252,24 @@ defmodule ElixirChatWeb.ChatLive.Components do
   end
 
   attr :form, :any, required: true
-  attr :channels, :list, required: true
 
-  def channel_catalog(assigns) do
+  def channel_create(assigns) do
     ~H"""
     <div
-      id="channel-catalog"
+      id="channel-create"
       class="channel-modal-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="channel-catalog-title"
+      aria-labelledby="channel-create-title"
     >
-      <section class="channel-modal" phx-window-keydown="close_channel_catalog" phx-key="escape">
+      <section class="channel-modal" phx-window-keydown="close_channel_create" phx-key="escape">
         <header>
-          <h2 id="channel-catalog-title">Каталог каналов</h2>
+          <h2 id="channel-create-title">Создать канал</h2>
           <button
-            id="close-channel-catalog"
+            id="close-channel-create"
             type="button"
-            phx-click="close_channel_catalog"
-            aria-label="Закрыть каталог"
+            phx-click="close_channel_create"
+            aria-label="Закрыть создание канала"
           ><.icon name="hero-x-mark" class="size-5" /></button>
         </header>
         <.form
@@ -288,6 +300,32 @@ defmodule ElixirChatWeb.ChatLive.Components do
           />
           <button id="create-channel" type="submit" class="channel-primary-action">Создать канал</button>
         </.form>
+      </section>
+    </div>
+    """
+  end
+
+  attr :channels, :list, required: true
+
+  def channel_catalog(assigns) do
+    ~H"""
+    <div
+      id="channel-catalog"
+      class="channel-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="channel-catalog-title"
+    >
+      <section class="channel-modal" phx-window-keydown="close_channel_catalog" phx-key="escape">
+        <header>
+          <h2 id="channel-catalog-title">Каталог каналов</h2>
+          <button
+            id="close-channel-catalog"
+            type="button"
+            phx-click="close_channel_catalog"
+            aria-label="Закрыть каталог"
+          ><.icon name="hero-x-mark" class="size-5" /></button>
+        </header>
         <div id="available-channel-list" class="available-channel-list">
           <article :for={channel <- @channels} id={"available-channel-#{channel.id}"}>
             <div>
@@ -628,6 +666,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
   attr :form, :any, required: true
   attr :channel, :any, required: true
   attr :other_user, :any, default: nil
+  attr :current_user_id, :integer, required: true
 
   def composer(assigns) do
     ~H"""
@@ -645,6 +684,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
       phx-submit="send_message"
       class="composer"
     >
+      <.input field={@form[:client_message_id]} id="message-client-message-id" type="hidden" />
       <.input
         field={@form[:body]}
         id="message-body"
@@ -657,6 +697,8 @@ defmodule ElixirChatWeb.ChatLive.Components do
         }
         aria-label="Сообщение"
         phx-hook="MessageComposer"
+        data-user-id={@current_user_id}
+        data-channel-id={@channel.id}
       />
       <button id="send-message" type="submit" aria-label="Отправить сообщение"><.icon
         name="hero-arrow-up"
