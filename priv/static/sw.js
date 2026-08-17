@@ -11,7 +11,7 @@ self.addEventListener("push", function (event) {
   event.waitUntil(
     self.registration.showNotification(payload.title, {
       body: payload.body,
-      tag: "orbit-push",
+      tag: `orbit-push:${payload.url}`,
       renotify: true,
       icon: "/favicon.ico",
       badge: "/favicon.ico",

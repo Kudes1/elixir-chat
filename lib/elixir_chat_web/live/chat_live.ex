@@ -60,6 +60,7 @@ defmodule ElixirChatWeb.ChatLive do
      )
      |> assign(:muted_channel_ids, Notifications.muted_channel_ids(user.id))
      |> assign(:notifications_available?, Notifications.enabled?())
+     |> assign(:vapid_public_key, Notifications.vapid_public_key())
      |> assign(:push_enabled?, Notifications.list_subscriptions(user.id) != [])
      |> assign(:subscribed_channel_id, nil)
      |> assign(:visitor_name, user.display_name)

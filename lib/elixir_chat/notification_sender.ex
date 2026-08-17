@@ -1,5 +1,5 @@
 defmodule ElixirChat.NotificationSender do
-  @moduledoc "Serializes asynchronous Web Push deliveries for created messages."
+  @moduledoc "Polls durable Web Push jobs and delivers them with bounded concurrency."
 
   use GenServer
 
@@ -11,49 +11,74 @@ defmodule ElixirChat.NotificationSender do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @impl true
-  def init(_opts), do: {:ok, %{}}
+  def wake_up(server \\ __MODULE__), do: GenServer.cast(server, :wake_up)
+  def dispatch_now(server \\ __MODULE__), do: GenServer.call(server, :dispatch_now, :infinity)
 
   @impl true
-  def handle_cast({:send, :channel, message}, state) do
-    if Notifications.enabled?() do
-      Logger.info("push notification job started",
-        kind: :channel,
-        message_id: message.id,
-        channel_id: message.channel_id
-      )
+  def init(opts) do
+    config = Application.get_env(:elixir_chat, __MODULE__, [])
 
-      safely_process(fn -> Notifications.process(:channel, message) end)
-    end
+    state = %{
+      interval: Keyword.get(opts, :interval, config[:interval] || 1_000),
+      batch_size: Keyword.get(opts, :batch_size, config[:batch_size] || 50),
+      max_concurrency: Keyword.get(opts, :max_concurrency, config[:max_concurrency] || 8),
+      task_timeout: Keyword.get(opts, :task_timeout, config[:task_timeout] || 15_000)
+    }
 
+    schedule_poll(state.interval)
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_cast(:wake_up, state) do
+    dispatch(state)
     {:noreply, state}
   end
 
-  def handle_cast({:send, :direct, message, direct}, state) do
-    if Notifications.enabled?() do
-      Logger.info("push notification job started",
-        kind: :direct,
-        message_id: message.id,
-        channel_id: message.channel_id
-      )
+  @impl true
+  def handle_call(:dispatch_now, _from, state) do
+    {:reply, dispatch(state), state}
+  end
 
-      safely_process(fn -> Notifications.process(:direct, message, direct) end)
-    end
-
+  @impl true
+  def handle_info(:poll, state) do
+    dispatch(state)
+    schedule_poll(state.interval)
     {:noreply, state}
   end
 
-  defp safely_process(fun) do
-    fun.()
+  defp dispatch(state) do
+    delivery_ids =
+      if Notifications.enabled?(), do: Notifications.due_delivery_ids(state.batch_size), else: []
+
+    results =
+      Task.async_stream(delivery_ids, &Notifications.deliver_delivery/1,
+        max_concurrency: state.max_concurrency,
+        ordered: true,
+        timeout: state.task_timeout,
+        on_timeout: :kill_task
+      )
+
+    delivery_ids
+    |> Enum.zip(results)
+    |> Enum.each(fn
+      {_delivery_id, {:ok, _result}} ->
+        :ok
+
+      {delivery_id, {:exit, reason}} ->
+        Logger.warning("push notification task exited: #{inspect(reason)}")
+        Notifications.fail_delivery(delivery_id, {:task_exit, reason})
+    end)
+
+    {:ok, length(delivery_ids)}
   rescue
     error ->
       Logger.warning(
-        "push notification job raised #{Exception.format(:error, error, __STACKTRACE__)}"
+        "push notification dispatch raised #{Exception.format(:error, error, __STACKTRACE__)}"
       )
-  catch
-    kind, reason ->
-      Logger.warning(
-        "push notification job stopped with #{Exception.format(kind, reason, __STACKTRACE__)}"
-      )
+
+      {:error, error}
   end
+
+  defp schedule_poll(interval), do: Process.send_after(self(), :poll, interval)
 end

@@ -3,9 +3,15 @@ import Config
 config :elixir_chat, :env, :test
 
 config :elixir_chat, ElixirChat.OutboxDispatcher,
-  interval: 60_000,
+  interval: 600_000,
   batch_size: 50,
   synchronous_wake_up: true
+
+config :elixir_chat, ElixirChat.NotificationSender,
+  interval: 600_000,
+  batch_size: 50,
+  max_concurrency: 4,
+  task_timeout: 5_000
 
 # Configure your database
 #

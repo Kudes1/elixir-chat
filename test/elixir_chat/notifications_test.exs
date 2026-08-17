@@ -4,7 +4,7 @@ defmodule ElixirChat.NotificationsTest do
   alias ElixirChat.Accounts.{Scope, User}
   alias ElixirChat.Chat
   alias ElixirChat.Notifications
-  alias ElixirChat.Notifications.NotificationPreference
+  alias ElixirChat.Notifications.{NotificationPreference, PushDelivery}
   alias ElixirChat.Repo
 
   setup do
@@ -53,31 +53,84 @@ defmodule ElixirChat.NotificationsTest do
 
   test "push subscriptions are stored and removed per user and endpoint", %{user: user} do
     {:ok, subscription} =
-      Notifications.subscribe(user, "https://push/endpoint-1", "p256dh-a", "auth-a")
+      Notifications.subscribe(user, "https://fcm.googleapis.com/endpoint-1", "p256dh-a", "auth-a")
 
-    assert subscription.endpoint == "https://push/endpoint-1"
+    assert subscription.endpoint == "https://fcm.googleapis.com/endpoint-1"
     assert [stored] = Notifications.list_subscriptions(user.id)
-    assert stored.endpoint == "https://push/endpoint-1"
+    assert stored.endpoint == "https://fcm.googleapis.com/endpoint-1"
 
     assert {:ok, _subscription} =
-             Notifications.subscribe(user, "https://push/endpoint-1", "p256dh-b", "auth-b")
+             Notifications.subscribe(
+               user,
+               "https://fcm.googleapis.com/endpoint-1",
+               "p256dh-b",
+               "auth-b"
+             )
 
     assert length(Notifications.list_subscriptions(user.id)) == 1
 
     assert {:ok, _subscription} =
-             Notifications.subscribe(user, "https://push/endpoint-2", "p256dh-c", "auth-c")
+             Notifications.subscribe(
+               user,
+               "https://fcm.googleapis.com/endpoint-2",
+               "p256dh-c",
+               "auth-c"
+             )
 
     assert length(Notifications.list_subscriptions(user.id)) == 2
 
-    Notifications.unsubscribe(user, "https://push/endpoint-1")
+    Notifications.unsubscribe(user, "https://fcm.googleapis.com/endpoint-1")
     assert [remaining] = Notifications.list_subscriptions(user.id)
-    assert remaining.endpoint == "https://push/endpoint-2"
+    assert remaining.endpoint == "https://fcm.googleapis.com/endpoint-2"
   end
 
   test "push subscriptions reject missing or blank browser credentials", %{user: user} do
-    assert {:error, changeset} = Notifications.subscribe(user, "https://push/endpoint", nil, "")
+    assert {:error, changeset} =
+             Notifications.subscribe(user, "https://fcm.googleapis.com/endpoint", nil, "")
+
     assert %{p256dh: ["can't be blank"], auth: ["can't be blank"]} = errors_on(changeset)
     assert Notifications.list_subscriptions(user.id) == []
+  end
+
+  test "a browser endpoint is transferred to the currently signed-in user", %{user: user} do
+    next_user = user_fixture()
+    endpoint = "https://fcm.googleapis.com/shared-browser"
+
+    assert {:ok, first} = Notifications.subscribe(user, endpoint, "first-key", "first-auth")
+
+    channel = channel_fixture(%{name: "ownership-transfer"})
+
+    {:ok, message} =
+      Chat.create_message(Scope.for_user(next_user), channel, %{body: "private preview"})
+
+    enable_push([])
+    assert :ok = Notifications.process(:channel, message)
+    assert Repo.aggregate(PushDelivery, :count) == 1
+
+    assert {:ok, transferred} =
+             Notifications.subscribe(next_user, endpoint, "next-key", "next-auth")
+
+    assert transferred.id == first.id
+    assert transferred.user_id == next_user.id
+    assert transferred.p256dh == "next-key"
+    assert Notifications.list_subscriptions(user.id) == []
+    assert [owned] = Notifications.list_subscriptions(next_user.id)
+    assert owned.id == first.id
+    assert Repo.aggregate(PushDelivery, :count) == 0
+  end
+
+  test "push subscriptions reject untrusted or non-HTTPS endpoints", %{user: user} do
+    for endpoint <- [
+          "http://fcm.googleapis.com/push",
+          "https://127.0.0.1/push",
+          "https://fcm.googleapis.com.evil.example/push",
+          "https://user@fcm.googleapis.com/push"
+        ] do
+      assert {:error, changeset} =
+               Notifications.subscribe(user, endpoint, "browser-key", "browser-auth")
+
+      assert "is not an allowed Web Push endpoint" in errors_on(changeset).endpoint
+    end
   end
 
   test "muting a channel records a preference and is reported in muted_channel_ids",
@@ -127,10 +180,11 @@ defmodule ElixirChat.NotificationsTest do
 
     enable_push([])
     assert :ok = Notifications.process(:channel, message)
+    assert {:ok, 1} = ElixirChat.NotificationSender.dispatch_now()
 
     assert_receive {:web_push, subscription_json, payload_json}
 
-    assert %{"endpoint" => "https://push/recipient", "keys" => keys} =
+    assert %{"endpoint" => "https://fcm.googleapis.com/recipient", "keys" => keys} =
              Jason.decode!(subscription_json)
 
     assert keys == %{"p256dh" => "p256dh-recipient", "auth" => "auth-recipient"}
@@ -147,6 +201,7 @@ defmodule ElixirChat.NotificationsTest do
 
     Notifications.set_muted(recipient, channel.id, true)
     assert :ok = Notifications.process(:channel, message)
+    assert {:ok, 0} = ElixirChat.NotificationSender.dispatch_now()
     refute_receive {:web_push, _, _}, 20
   end
 
@@ -163,9 +218,10 @@ defmodule ElixirChat.NotificationsTest do
 
     enable_push([])
     assert :ok = Notifications.process(:direct, message, direct)
+    assert {:ok, 1} = ElixirChat.NotificationSender.dispatch_now()
 
     assert_receive {:web_push, subscription_json, payload_json}
-    assert Jason.decode!(subscription_json)["endpoint"] == "https://push/other"
+    assert Jason.decode!(subscription_json)["endpoint"] == "https://fcm.googleapis.com/other"
 
     assert %{"title" => "Ирина", "body" => "привет", "url" => url} =
              Jason.decode!(payload_json)
@@ -182,39 +238,52 @@ defmodule ElixirChat.NotificationsTest do
 
     enable_push([{:error, :expired}])
     assert :ok = Notifications.process(:channel, message)
+    assert {:ok, 1} = ElixirChat.NotificationSender.dispatch_now()
     assert_receive {:web_push, _, _}
     assert Notifications.list_subscriptions(recipient.id) == []
   end
 
-  test "HTTP errors and exceptions do not restart the sender or block later jobs", %{scope: scope} do
+  test "transient failures are persisted for retry without restarting the sender", %{scope: scope} do
     recipient = user_fixture()
     channel = channel_fixture(%{name: "resilient-push"})
     subscribe!(recipient, "resilient")
     {:ok, message} = Chat.create_message(scope, channel, %{body: "привет"})
 
-    enable_push([
-      {:error, {:http_error, 503, "unavailable"}},
-      {:raise, "encryption failed"},
-      {:ok, :sent}
-    ])
+    enable_push([{:error, {:http_error, 503, "unavailable"}}])
 
     sender = Process.whereis(ElixirChat.NotificationSender)
+    assert :ok = Notifications.process(:channel, message)
+    assert {:ok, 1} = ElixirChat.NotificationSender.dispatch_now()
+    assert_receive {:web_push, _, _}
 
-    for _ <- 1..3 do
-      Notifications.enqueue(:channel, message)
-      :sys.get_state(sender)
-    end
-
-    for _ <- 1..3, do: assert_receive({:web_push, _, _})
+    assert %PushDelivery{attempt_count: 1, last_error: last_error} = Repo.one(PushDelivery)
+    assert last_error =~ "http_error"
     assert Process.alive?(sender)
     assert Process.whereis(ElixirChat.NotificationSender) == sender
+  end
+
+  test "exceptions in one delivery do not block later jobs", %{scope: scope} do
+    first_recipient = user_fixture()
+    second_recipient = user_fixture()
+    channel = channel_fixture(%{name: "concurrent-push"})
+    subscribe!(first_recipient, "first")
+    subscribe!(second_recipient, "second")
+    {:ok, message} = Chat.create_message(scope, channel, %{body: "привет"})
+
+    enable_push([{:raise, "encryption failed"}, {:ok, :sent}])
+    assert :ok = Notifications.process(:channel, message)
+    assert {:ok, 2} = ElixirChat.NotificationSender.dispatch_now()
+
+    assert_receive {:web_push, _, _}
+    assert_receive {:web_push, _, _}
+    assert Repo.aggregate(PushDelivery, :count) == 1
   end
 
   defp subscribe!(user, suffix) do
     {:ok, subscription} =
       Notifications.subscribe(
         user,
-        "https://push/#{suffix}",
+        "https://fcm.googleapis.com/#{suffix}",
         "p256dh-#{suffix}",
         "auth-#{suffix}"
       )

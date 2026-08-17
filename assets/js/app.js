@@ -493,83 +493,118 @@ const urlBase64ToUint8Array = base64 => {
 
 const PushNotifications = {
   mounted() {
+    this.optOutKey = "orbit:push-opt-out:v1"
     this.button = this.el.querySelector("[data-notifications-toggle]")
     this.vapidKey = this.el.dataset.vapidPublicKey
-    this.supported = "serviceWorker" in navigator &&
+    this.enabled = this.el.dataset.pushEnabled === "true"
+    this.busy = false
+
+    this.supported = Boolean(this.button) &&
+      "serviceWorker" in navigator &&
       "PushManager" in window &&
       "Notification" in window &&
       Boolean(this.vapidKey)
-    this.enabled = this.el.dataset.pushEnabled === "true"
-    this.optOutKey = "orbit:push-opt-out:v1"
 
     if (!this.supported) {
-      this.renderOff(true)
+      if (this.button) this.button.hidden = true
       return
     }
 
-    this.toggle = () => this.toggleSubscription()
-    this.button?.addEventListener("click", this.toggle)
+    this.toggle = event => {
+      event.preventDefault()
+      this.toggleSubscription()
+    }
+    this.button.addEventListener("click", this.toggle)
+    this.render()
 
-    navigator.serviceWorker.register("/sw.js")
+    // this.ready lets a click that lands before registration settles wait for
+    // it instead of silently doing nothing; the trailing .catch keeps it from
+    // rejecting, so awaiting it later is always safe.
+    this.ready = navigator.serviceWorker.register("/sw.js")
       .then(registration => {
         this.registration = registration
         return this.reconcile()
       })
       .catch(error => {
         console.warn("Unable to register the push notification service worker", error)
-        this.renderState(false)
+        this.render()
       })
+  },
+  updated() {
+    // Reflect state changes pushed from the server (another tab unsubscribed,
+    // an admin cleared subscriptions, …). Skip while we own an in-flight
+    // change so we don't clobber it with a stale server value mid-flight.
+    if (!this.supported || this.busy) return
+    this.enabled = this.el.dataset.pushEnabled === "true"
+    this.render()
   },
   async reconcile() {
     if (!this.registration) return
 
     try {
-      const permission = Notification.permission
+      if (Notification.permission === "denied") {
+        await this.dropLocalSubscription()
+        return
+      }
+
       const subscription = await this.registration.pushManager.getSubscription()
 
       if (subscription) {
+        if (this.optedOut()) {
+          await this.unsubscribe(subscription)
+          return
+        }
+
         const reply = await this.pushEventWithReply("push_subscribe", {
           subscription: subscription.toJSON(),
         })
 
-        if (reply?.ok === true) {
-          this.renderState(true)
-        } else {
-          await subscription.unsubscribe().catch(() => false)
-          this.renderState(false)
-        }
+        this.enabled = reply?.ok === true
+        if (!this.enabled) await subscription.unsubscribe().catch(() => false)
+        this.render()
         return
       }
 
-      if (permission === "granted" && !this.optedOut()) {
+      if (Notification.permission === "granted" && !this.optedOut()) {
         await this.enable()
       } else {
-        this.renderState(false)
+        this.enabled = false
       }
+
+      this.render()
     } catch (error) {
       console.warn("Unable to reconcile the push notification subscription", error)
-      this.renderState(false)
+      this.enabled = false
+      this.render()
     }
   },
   async toggleSubscription() {
-    if (!this.registration) {
-      this.renderState(false)
-      return
-    }
+    // Claim `busy` synchronously, before any `await`, so a second click fired
+    // while this one is still in flight (including while still waiting on
+    // `this.ready`) always sees it set and bails out instead of racing us.
+    if (this.busy) return
+    this.busy = true
+    this.render()
 
     try {
+      if (!this.registration) await this.ready
+      if (!this.registration) return
+      if (Notification.permission === "denied") return
+
       if (this.enabled) await this.disable()
       else await this.enable()
     } catch (error) {
       console.warn("Unable to toggle push notifications", error)
-      this.renderState(false)
+    } finally {
+      this.busy = false
+      this.render()
     }
   },
   async enable() {
     try {
       const permission = await Notification.requestPermission()
       if (permission !== "granted") {
-        this.renderState(false)
+        this.enabled = false
         return
       }
 
@@ -587,38 +622,55 @@ const PushNotifications = {
 
       if (reply?.ok !== true) {
         await subscription.unsubscribe().catch(() => false)
-        this.renderState(false)
+        this.enabled = false
         return
       }
 
       localStorage.removeItem(this.optOutKey)
-      this.renderState(true)
+      this.enabled = true
     } catch (error) {
       console.warn("Unable to subscribe to push notifications", error)
-      this.renderState(false)
+      this.enabled = false
     }
   },
-  async disable(existingSubscription) {
+  disable(existingSubscription) {
+    localStorage.setItem(this.optOutKey, "1")
+    return this.unsubscribe(existingSubscription)
+  },
+  async dropLocalSubscription() {
+    const subscription = await this.registration.pushManager.getSubscription()
+    if (subscription) {
+      await this.unsubscribe(subscription)
+    } else {
+      this.enabled = false
+      this.render()
+    }
+  },
+  async unsubscribe(existingSubscription) {
     try {
-      if (!this.registration) throw new Error("Service worker registration is unavailable")
-
       const subscription = existingSubscription || await this.registration.pushManager.getSubscription()
       if (!subscription) {
-        this.renderState(false)
+        this.enabled = false
+        this.render()
         return
       }
+
+      await subscription.unsubscribe().catch(error => {
+        console.warn("Unable to remove the browser push subscription", error)
+        return false
+      })
 
       const reply = await this.pushEventWithReply("push_unsubscribe", {
         endpoint: subscription.endpoint,
       })
-      if (reply?.ok !== true) throw new Error("The server rejected the unsubscribe request")
+      if (reply?.ok !== true) console.warn("The server rejected the unsubscribe request")
 
-      await subscription.unsubscribe()
-      localStorage.setItem(this.optOutKey, "1")
-      this.renderState(false)
+      this.enabled = false
+      this.render()
     } catch (error) {
       console.warn("Unable to unsubscribe from push notifications", error)
-      this.renderState(false)
+      this.enabled = false
+      this.render()
     }
   },
   optedOut() {
@@ -631,21 +683,33 @@ const PushNotifications = {
   pushEventWithReply(event, payload) {
     return new Promise(resolve => this.pushEvent(event, payload, resolve))
   },
-  renderState(enabled) {
-    this.enabled = enabled
-    this.renderOff(enabled)
-    if (this.button) {
-      this.button.setAttribute("aria-pressed", String(enabled))
-      this.button.title = enabled ? "Отключить уведомления" : "Включить уведомления"
-    }
+  state() {
+    if (this.busy) return "pending"
+    if (Notification.permission === "denied") return "blocked"
+    return this.enabled ? "on" : "off"
   },
-  renderOff(enabled) {
+  render() {
     if (!this.button) return
-    this.button.hidden = !this.supported
+
+    const state = this.state()
+    const labels = {
+      on: "Отключить уведомления",
+      off: "Включить уведомления",
+      pending: "Изменение настроек уведомлений…",
+      blocked: "Уведомления заблокированы в настройках браузера. Разрешите их для этого сайта, чтобы включить.",
+    }
+
+    this.button.dataset.notificationsState = state
+    this.button.disabled = state === "pending"
+    this.button.setAttribute("aria-busy", String(state === "pending"))
+    this.button.setAttribute("aria-pressed", String(state === "on"))
+    this.button.setAttribute("aria-label", `Браузерные уведомления: ${labels[state].toLowerCase()}`)
+    this.button.title = labels[state]
+
     const on = this.button.querySelector('[data-notifications-icon="on"]')
     const off = this.button.querySelector('[data-notifications-icon="off"]')
-    if (on) on.hidden = !enabled
-    if (off) off.hidden = enabled
+    if (on) on.hidden = state !== "on"
+    if (off) off.hidden = state === "on"
   },
   destroyed() {
     this.button?.removeEventListener("click", this.toggle)

@@ -11,7 +11,7 @@ config :elixir_chat, ElixirChat.RepoDiagnostics,
   slow_query_ms: parse_positive_integer.("DB_SLOW_QUERY_MS", "500"),
   queue_warn_ms: parse_positive_integer.("DB_QUEUE_WARN_MS", "100")
 
-outbox_default_interval = if config_env() == :test, do: "60000", else: "1000"
+outbox_default_interval = if config_env() == :test, do: "600000", else: "1000"
 
 config :elixir_chat, ElixirChat.OutboxDispatcher,
   interval: parse_positive_integer.("OUTBOX_POLL_INTERVAL_MS", outbox_default_interval),
@@ -22,13 +22,49 @@ vapid_public_key = System.get_env("VAPID_PUBLIC_KEY", "")
 vapid_private_key = System.get_env("VAPID_PRIVATE_KEY", "")
 vapid_subject = System.get_env("VAPID_SUBJECT", "mailto:admin@example.com")
 
+push_allowed_host_suffixes =
+  System.get_env(
+    "WEB_PUSH_ALLOWED_HOST_SUFFIXES",
+    "fcm.googleapis.com,updates.push.services.mozilla.com,web.push.apple.com,notify.windows.com"
+  )
+  |> String.split(",", trim: true)
+  |> Enum.map(&String.trim/1)
+  |> Enum.reject(&(&1 == ""))
+
+push_enabled = vapid_public_key != "" and vapid_private_key != ""
+
+if vapid_public_key == "" != (vapid_private_key == "") do
+  raise "VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY must either both be set or both be empty"
+end
+
+if push_enabled do
+  valid_key? = fn encoded, expected_size ->
+    case Base.url_decode64(encoded, padding: false) do
+      {:ok, decoded} -> byte_size(decoded) == expected_size
+      :error -> false
+    end
+  end
+
+  unless valid_key?.(vapid_public_key, 65) and valid_key?.(vapid_private_key, 32) do
+    raise "VAPID_PUBLIC_KEY or VAPID_PRIVATE_KEY has an invalid base64url value or key size"
+  end
+
+  unless match?(
+           {:ok, %URI{scheme: scheme}} when scheme in ["mailto", "https"],
+           URI.new(vapid_subject)
+         ) do
+    raise "VAPID_SUBJECT must be a mailto: or https: URI"
+  end
+end
+
 config :web_push_elixir,
   vapid_public_key: vapid_public_key,
   vapid_private_key: vapid_private_key,
   vapid_subject: vapid_subject
 
 config :elixir_chat, ElixirChat.Notifications,
-  enabled: vapid_public_key != "" and vapid_private_key != "" and config_env() != :test
+  enabled: push_enabled and config_env() != :test,
+  allowed_host_suffixes: push_allowed_host_suffixes
 
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the

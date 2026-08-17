@@ -22,6 +22,16 @@ config :elixir_chat, ElixirChat.OutboxDispatcher,
   batch_size: 50,
   retention: :timer.hours(24 * 7)
 
+config :elixir_chat, ElixirChat.NotificationSender,
+  interval: 1_000,
+  batch_size: 50,
+  max_concurrency: 8,
+  task_timeout: 15_000
+
+# Web Push endpoints are capability URLs. Never follow a provider response to
+# another origin; this also closes a redirect-based SSRF path.
+config :req, default_options: [redirect: false]
+
 # Configure the endpoint
 config :elixir_chat, ElixirChatWeb.Endpoint,
   url: [host: "localhost"],

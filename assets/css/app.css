@@ -796,12 +796,52 @@ button {
 
 .sidebar-profile {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
+  grid-template-columns: 34px minmax(0, 1fr) auto auto;
   gap: 10px;
   align-items: center;
   margin: 0 12px;
   padding: 14px 8px 16px;
   border-top: 1px solid var(--orbit-border);
+}
+
+.notifications-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: var(--orbit-text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+}
+
+.notifications-toggle:hover:not(:disabled) {
+  color: var(--orbit-text);
+  background: var(--orbit-sidebar-hover);
+}
+
+.notifications-toggle:focus-visible {
+  outline: 2px solid var(--orbit-accent);
+  outline-offset: 2px;
+}
+
+.notifications-toggle[data-notifications-state="on"] {
+  color: var(--orbit-accent);
+}
+
+.notifications-toggle[data-notifications-state="blocked"] {
+  color: var(--orbit-text-subtle);
+}
+
+.notifications-toggle:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.notifications-icon {
+  display: inline-flex;
 }
 
 .profile-avatar {

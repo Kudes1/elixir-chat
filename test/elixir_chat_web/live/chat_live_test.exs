@@ -1452,14 +1452,14 @@ defmodule ElixirChatWeb.ChatLiveTest do
 
     render_hook(view, "push_subscribe", %{
       "subscription" => %{
-        "endpoint" => "https://push/live-success",
+        "endpoint" => "https://fcm.googleapis.com/live-success",
         "keys" => %{"p256dh" => "browser-key", "auth" => "browser-auth"}
       }
     })
 
     assert_reply view, %{ok: true}
     assert [subscription] = Notifications.list_subscriptions(user.id)
-    assert subscription.endpoint == "https://push/live-success"
+    assert subscription.endpoint == "https://fcm.googleapis.com/live-success"
     assert has_element?(view, "#notifications-toggle[aria-pressed='true']")
   end
 
@@ -1472,7 +1472,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
 
     render_hook(view, "push_subscribe", %{
       "subscription" => %{
-        "endpoint" => "https://push/incomplete",
+        "endpoint" => "https://fcm.googleapis.com/incomplete",
         "keys" => %{"p256dh" => "browser-key"}
       }
     })
@@ -1505,13 +1505,13 @@ defmodule ElixirChatWeb.ChatLiveTest do
 
     render_hook(view, "push_subscribe", %{
       "subscription" => %{
-        "endpoint" => "https://push/remove-me",
+        "endpoint" => "https://fcm.googleapis.com/remove-me",
         "keys" => %{"p256dh" => "browser-key", "auth" => "browser-auth"}
       }
     })
 
     assert_reply view, %{ok: true}
-    render_hook(view, "push_unsubscribe", %{"endpoint" => "https://push/remove-me"})
+    render_hook(view, "push_unsubscribe", %{"endpoint" => "https://fcm.googleapis.com/remove-me"})
     assert_reply view, %{ok: true}
     assert Notifications.list_subscriptions(user.id) == []
     assert has_element?(view, "#notifications-toggle[aria-pressed='false']")
