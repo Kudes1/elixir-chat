@@ -94,10 +94,17 @@ docker build --target production -t orbit:latest .
 make admin-bootstrap LOGIN=alice NAME="Alice"
 ```
 
-что эквивалентно
+В **production**-контейнере `make admin-bootstrap` эквивалентен:
 
 ```sh
 docker compose exec web bin/orbit-admin bootstrap --login alice --name "Alice"
+```
+
+В **dev**-контейнере (`bin/orbit-admin` существует только в production-релизе)
+используйте вместо этого Mix task:
+
+```sh
+docker compose -f compose.yaml -f compose.dev.yaml exec web mix orbit.admin bootstrap --login alice --name "Alice"
 ```
 
 Скрипт печатает путь `/invitation/TOKEN`. Добавьте этот путь к любому
@@ -105,6 +112,8 @@ docker compose exec web bin/orbit-admin bootstrap --login alice --name "Alice"
 первого администратора. Вместо `bootstrap` доступны `transfer --to-login LOGIN`
 (сделать админом существующего пользователя) и `reset` (перевыпустить пароль
 админу) — в Makefile им соответствуют `make admin-transfer` и `make admin-reset`.
+Аналоги `transfer`/`reset` в dev-контейнере: `mix orbit.admin transfer --to-login LOGIN`
+и `mix orbit.admin reset`.
 
 ## Несколько публичных доменов
 
