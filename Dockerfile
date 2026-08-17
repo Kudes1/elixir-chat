@@ -13,18 +13,6 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends build-essent
 WORKDIR /app
 RUN mix local.hex --force && mix local.rebar --force
 
-FROM base AS development
-
-COPY mix.exs mix.lock ./
-RUN mkdir config
-COPY config/config.exs config/dev.exs config/
-RUN mix deps.get
-COPY . .
-RUN chmod +x /app/docker-entrypoint-dev.sh
-
-ENTRYPOINT ["/app/docker-entrypoint-dev.sh"]
-CMD ["mix", "phx.server"]
-
 FROM base AS builder
 
 ENV MIX_ENV=prod

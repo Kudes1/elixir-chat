@@ -3,32 +3,28 @@
 Self-hosted командный чат на Elixir, Phoenix и LiveView. Текущая версия — MVP
 для запуска одним экземпляром приложения с PostgreSQL.
 
-## Запуск и разработка
+## Запуск (production)
 
-Нужен только Docker Engine с Docker Compose:
+Эта ветка предназначена для прода. `compose.yaml` самодостаточен: запускает
+PostgreSQL и минимальный release-образ web-сервиса одной командой. Нужен только
+Docker Engine с Docker Compose:
 
 ```sh
 cp .env.example .env
-docker compose up --build
+# Замените SECRET_KEY_BASE и POSTGRES_PASSWORD на production-значения.
+docker compose up -d --build
 ```
 
-Откройте [http://localhost:4000](http://localhost:4000). Миграции и стартовые
-каналы создаются автоматически. Исходники подключены в контейнер, поэтому
-изменения подхватываются без локальной установки Elixir или Node.js.
+Откройте [http://localhost:4000](http://localhost:4000). Перед стартом release
+автоматически применяет миграции и запускает идемпотентный seed. Остановка —
+той же командой `docker compose down`. `make prod-up` и `make prod-down`
+делают то же самое.
 
-Проверки также выполняются внутри контейнера:
+Production-сборка проверяет gzip-бюджеты основных ассетов: не более 55 КБ для
+JavaScript и 20 КБ для CSS. Проверка входит в `mix assets.deploy`.
 
-```sh
-docker compose exec web mix test
-docker compose exec web mix precommit
-```
-
-Production-сборка также проверяет gzip-бюджеты основных ассетов: не более
-55 КБ для JavaScript и 20 КБ для CSS. Проверка входит в `mix assets.deploy`.
-
-Остановить сервисы можно через `docker compose down`. Данные PostgreSQL
-останутся в именованном volume. `docker compose down -v` удаляет базу и кэши
-зависимостей без возможности восстановления.
+Разработка (с hot reload и bind-mount исходников) ведётся на ветке `dev` —
+переключитесь на неё для локальной разработки и тестов.
 
 ## Что поддерживается
 
@@ -43,23 +39,27 @@ Production-сборка также проверяет gzip-бюджеты осн
 Личные диалоги используют приватные каналы, доступные только двум участникам.
 Групповые приватные каналы и уведомления вне приложения пока не поддерживаются.
 
-## Production image
+## Первый администратор
 
-Минимальный release-образ собирается и запускается через production override:
-
-```sh
-cp .env.example .env
-# Замените SECRET_KEY_BASE и POSTGRES_PASSWORD на production-значения.
-docker compose -f compose.yaml -f compose.prod.yaml up -d --build
-```
-
-В этом режиме web-сервис использует release без bind-mount исходников и без
-Phoenix code reloader. Перед стартом release автоматически применяет миграции
-и запускает идемпотентный seed. Для остановки используйте тот же набор файлов:
+Первого администратора создаёт release-команда `orbit-admin` в web-контейнере:
 
 ```sh
-docker compose -f compose.yaml -f compose.prod.yaml down
+make admin-bootstrap LOGIN=alice NAME="Alice"
 ```
+
+что эквивалентно
+
+```sh
+docker compose exec web bin/orbit-admin bootstrap --login alice --name "Alice"
+```
+
+Команда выполняет миграции, idempotent-seed и в одной транзакции создаёт
+одноразовое приглашение (для bootstrap — только если администратора ещё нет).
+Скрипт печатает путь `/invitation/TOKEN`. Добавьте этот путь к любому
+разрешённому домену сервиса и откройте его в браузере, чтобы зарегистрировать
+первого администратора. Вместо `bootstrap` доступны `transfer --to-login LOGIN`
+(сделать админом существующего пользователя) и `reset` (перевыпустить пароль
+админу) — им соответствуют `make admin-transfer` и `make admin-reset`.
 
 Образ отдельно можно собрать командой:
 

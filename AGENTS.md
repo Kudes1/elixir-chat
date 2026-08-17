@@ -2,14 +2,23 @@
 
 ## Docker-first workflow
 
-The application **must be built and run with Docker Compose**. Do not rely on a host Elixir, Node, or PostgreSQL installation for normal development or verification.
+This branch is production-only. The application **must be built and run with
+Docker Compose**. Do not rely on a host Elixir, Node, or PostgreSQL
+installation for normal development or verification.
+
+`compose.yaml` is a self-contained production stack (PostgreSQL + release image).
+Start it with a single command:
 
 ```sh
 cp .env.example .env
-docker compose up --build
+docker compose up -d --build
 ```
 
-Use `docker compose exec web mix test` for tests and `docker compose exec web mix precommit` before handing off changes. Stop services with `docker compose down`; use `down -v` only when intentionally deleting local database data. Keep `Dockerfile`, `compose.yaml`, and `.env.example` in sync with runtime configuration.
+Development (hot reload, bind mounts, running tests/precommit) happens on the
+`dev` branch, which overlays `compose.dev.yaml`. Switch to `dev` for any code
+changes or test runs; merge `dev` into this branch for releases. Keep
+`Dockerfile`, `compose.yaml`, and `.env.example` in sync with runtime
+configuration.
 
 ## Phoenix and LiveView
 
