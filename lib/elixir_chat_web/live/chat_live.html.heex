@@ -21,6 +21,8 @@
       visitor_name={@visitor_name}
       online_user_ids={@online_user_ids}
       unread_counts={@unread_counts}
+      push_enabled?={@push_enabled?}
+      vapid_public_key={Notifications.vapid_public_key()}
     />
     <div
       id="sidebar-resizer"
@@ -59,6 +61,7 @@
         online_count={@online_count}
         current_user={@current_scope.user}
         online_user_ids={@online_user_ids}
+        muted?={MapSet.member?(@muted_channel_ids, @channel.id)}
       />
 
       <div class="message-window">

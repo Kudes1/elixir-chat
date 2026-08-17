@@ -43,6 +43,12 @@ defmodule ElixirChat.DataCase do
       Ecto.Adapters.SQL.Sandbox.allow(ElixirChat.Repo, pid, dispatcher)
     end
 
+    sender = Process.whereis(ElixirChat.NotificationSender)
+
+    if sender do
+      Ecto.Adapters.SQL.Sandbox.allow(ElixirChat.Repo, pid, sender)
+    end
+
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
   end
 

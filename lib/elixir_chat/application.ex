@@ -14,7 +14,8 @@ defmodule ElixirChat.Application do
       ElixirChat.Repo,
       {DNSCluster, query: Application.get_env(:elixir_chat, :dns_cluster_query) || :ignore},
       ElixirChat.RealtimeSupervisor,
-      ElixirChat.OutboxDispatcher
+      ElixirChat.OutboxDispatcher,
+      ElixirChat.NotificationSender
     ]
 
     # See https://elixir.hexdocs.pm/Supervisor.html

@@ -18,6 +18,18 @@ config :elixir_chat, ElixirChat.OutboxDispatcher,
   batch_size: parse_positive_integer.("OUTBOX_BATCH_SIZE", "50"),
   retention: parse_positive_integer.("OUTBOX_RETENTION_DAYS", "7") * :timer.hours(24)
 
+vapid_public_key = System.get_env("VAPID_PUBLIC_KEY", "")
+vapid_private_key = System.get_env("VAPID_PRIVATE_KEY", "")
+vapid_subject = System.get_env("VAPID_SUBJECT", "mailto:admin@example.com")
+
+config :web_push_elixir,
+  vapid_public_key: vapid_public_key,
+  vapid_private_key: vapid_private_key,
+  vapid_subject: vapid_subject
+
+config :elixir_chat, ElixirChat.Notifications,
+  enabled: vapid_public_key != "" and vapid_private_key != "" and config_env() != :test
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration

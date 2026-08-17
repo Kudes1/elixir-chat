@@ -16,6 +16,8 @@ defmodule ElixirChatWeb.ChatLive.Components do
   attr :visitor_name, :string, required: true
   attr :online_user_ids, :any, required: true
   attr :unread_counts, :map, required: true
+  attr :push_enabled?, :boolean, default: false
+  attr :vapid_public_key, :string, default: ""
 
   def sidebar(assigns) do
     ~H"""
@@ -193,11 +195,35 @@ defmodule ElixirChatWeb.ChatLive.Components do
           </div>
         </section>
       </nav>
-      <footer id="current-user" class="sidebar-profile">
+      <footer
+        id="current-user"
+        class="sidebar-profile"
+        phx-hook="PushNotifications"
+        data-vapid-public-key={@vapid_public_key}
+        data-push-enabled={to_string(@push_enabled?)}
+      >
         <.user_avatar name={@visitor_name} user_id={@current_user.id} class="profile-avatar" />
         <div class="profile-details">
           <strong>{@visitor_name}</strong><small id="current-user-login" class="current-user-login">@{@current_user.login}</small>
         </div>
+        <button
+          id="notifications-toggle"
+          type="button"
+          class="notifications-toggle"
+          data-notifications-toggle
+          aria-label="Браузерные уведомления"
+          aria-pressed={to_string(@push_enabled?)}
+          title={if @push_enabled?, do: "Отключить уведомления", else: "Включить уведомления"}
+        >
+          <span class="notifications-icon" data-notifications-icon="on"><.icon
+            name="hero-bell"
+            class="size-4"
+          /></span>
+          <span class="notifications-icon" data-notifications-icon="off" hidden><.icon
+            name="hero-bell-slash"
+            class="size-4"
+          /></span>
+        </button>
         <.link
           href={~p"/logout"}
           method="delete"
@@ -220,6 +246,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
   attr :online_count, :integer, required: true
   attr :current_user, :any, required: true
   attr :online_user_ids, :any, required: true
+  attr :muted?, :boolean, default: false
 
   def conversation_header(assigns) do
     ~H"""
@@ -257,6 +284,23 @@ defmodule ElixirChatWeb.ChatLive.Components do
         </div>
       <% end %>
       <div class="channel-header-actions">
+        <button
+          id="toggle-mute"
+          type="button"
+          class="channel-action"
+          phx-click="toggle_mute"
+          phx-value-channel-id={@channel.id}
+          aria-label={
+            if @muted?,
+              do: "Включить уведомления для этого разговора",
+              else: "Отключить уведомления для этого разговора"
+          }
+          aria-pressed={to_string(@muted?)}
+          title={if @muted?, do: "Уведомления отключены", else: "Уведомления включены"}
+        >
+          <.icon :if={@muted?} name="hero-bell-slash" class="size-5" />
+          <.icon :if={not @muted?} name="hero-bell" class="size-5" />
+        </button>
         <button
           :if={is_nil(@other_user)}
           id="open-channel-members"

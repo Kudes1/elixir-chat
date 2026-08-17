@@ -482,6 +482,176 @@ const MessageEditWindow = {
   },
 }
 
+const urlBase64ToUint8Array = base64 => {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4)
+  const normalized = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/")
+  const raw = atob(normalized)
+  const bytes = new Uint8Array(raw.length)
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
+  return bytes
+}
+
+const PushNotifications = {
+  mounted() {
+    this.button = this.el.querySelector("[data-notifications-toggle]")
+    this.vapidKey = this.el.dataset.vapidPublicKey
+    this.supported = "serviceWorker" in navigator &&
+      "PushManager" in window &&
+      "Notification" in window &&
+      Boolean(this.vapidKey)
+    this.enabled = this.el.dataset.pushEnabled === "true"
+    this.optOutKey = "orbit:push-opt-out:v1"
+
+    if (!this.supported) {
+      this.renderOff(true)
+      return
+    }
+
+    this.toggle = () => this.toggleSubscription()
+    this.button?.addEventListener("click", this.toggle)
+
+    navigator.serviceWorker.register("/sw.js")
+      .then(registration => {
+        this.registration = registration
+        return this.reconcile()
+      })
+      .catch(error => {
+        console.warn("Unable to register the push notification service worker", error)
+        this.renderState(false)
+      })
+  },
+  async reconcile() {
+    if (!this.registration) return
+
+    try {
+      const permission = Notification.permission
+      const subscription = await this.registration.pushManager.getSubscription()
+
+      if (subscription) {
+        const reply = await this.pushEventWithReply("push_subscribe", {
+          subscription: subscription.toJSON(),
+        })
+
+        if (reply?.ok === true) {
+          this.renderState(true)
+        } else {
+          await subscription.unsubscribe().catch(() => false)
+          this.renderState(false)
+        }
+        return
+      }
+
+      if (permission === "granted" && !this.optedOut()) {
+        await this.enable()
+      } else {
+        this.renderState(false)
+      }
+    } catch (error) {
+      console.warn("Unable to reconcile the push notification subscription", error)
+      this.renderState(false)
+    }
+  },
+  async toggleSubscription() {
+    if (!this.registration) {
+      this.renderState(false)
+      return
+    }
+
+    try {
+      if (this.enabled) await this.disable()
+      else await this.enable()
+    } catch (error) {
+      console.warn("Unable to toggle push notifications", error)
+      this.renderState(false)
+    }
+  },
+  async enable() {
+    try {
+      const permission = await Notification.requestPermission()
+      if (permission !== "granted") {
+        this.renderState(false)
+        return
+      }
+
+      let subscription = await this.registration.pushManager.getSubscription()
+      if (!subscription) {
+        subscription = await this.registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(this.vapidKey),
+        })
+      }
+
+      const reply = await this.pushEventWithReply("push_subscribe", {
+        subscription: subscription.toJSON(),
+      })
+
+      if (reply?.ok !== true) {
+        await subscription.unsubscribe().catch(() => false)
+        this.renderState(false)
+        return
+      }
+
+      localStorage.removeItem(this.optOutKey)
+      this.renderState(true)
+    } catch (error) {
+      console.warn("Unable to subscribe to push notifications", error)
+      this.renderState(false)
+    }
+  },
+  async disable(existingSubscription) {
+    try {
+      if (!this.registration) throw new Error("Service worker registration is unavailable")
+
+      const subscription = existingSubscription || await this.registration.pushManager.getSubscription()
+      if (!subscription) {
+        this.renderState(false)
+        return
+      }
+
+      const reply = await this.pushEventWithReply("push_unsubscribe", {
+        endpoint: subscription.endpoint,
+      })
+      if (reply?.ok !== true) throw new Error("The server rejected the unsubscribe request")
+
+      await subscription.unsubscribe()
+      localStorage.setItem(this.optOutKey, "1")
+      this.renderState(false)
+    } catch (error) {
+      console.warn("Unable to unsubscribe from push notifications", error)
+      this.renderState(false)
+    }
+  },
+  optedOut() {
+    try {
+      return localStorage.getItem(this.optOutKey) === "1"
+    } catch (_error) {
+      return false
+    }
+  },
+  pushEventWithReply(event, payload) {
+    return new Promise(resolve => this.pushEvent(event, payload, resolve))
+  },
+  renderState(enabled) {
+    this.enabled = enabled
+    this.renderOff(enabled)
+    if (this.button) {
+      this.button.setAttribute("aria-pressed", String(enabled))
+      this.button.title = enabled ? "Отключить уведомления" : "Включить уведомления"
+    }
+  },
+  renderOff(enabled) {
+    if (!this.button) return
+    this.button.hidden = !this.supported
+    const on = this.button.querySelector('[data-notifications-icon="on"]')
+    const off = this.button.querySelector('[data-notifications-icon="off"]')
+    if (on) on.hidden = !enabled
+    if (off) off.hidden = enabled
+  },
+  destroyed() {
+    this.button?.removeEventListener("click", this.toggle)
+  },
+}
+
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: () => ({
@@ -496,6 +666,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     SidebarResize,
     MessageDeleteWindow,
     MessageEditWindow,
+    PushNotifications,
   },
 })
 

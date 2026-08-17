@@ -5,6 +5,7 @@ defmodule ElixirChatWeb.ChatLive do
   alias ElixirChat.Accounts.Scope
   alias ElixirChat.Chat
   alias ElixirChat.Chat.{Channel, DirectConversation, Message}
+  alias ElixirChat.Notifications
   alias ElixirChat.OnlineUsers
   alias ElixirChatWeb.Presence
 
@@ -57,6 +58,9 @@ defmodule ElixirChatWeb.ChatLive do
        :unread_counts,
        Chat.list_unread_counts(socket.assigns.current_scope, conversation_ids)
      )
+     |> assign(:muted_channel_ids, Notifications.muted_channel_ids(user.id))
+     |> assign(:notifications_available?, Notifications.enabled?())
+     |> assign(:push_enabled?, Notifications.list_subscriptions(user.id) != [])
      |> assign(:subscribed_channel_id, nil)
      |> assign(:visitor_name, user.display_name)
      |> assign(:online_count, OnlineUsers.count())
@@ -273,6 +277,58 @@ defmodule ElixirChatWeb.ChatLive do
     case Chat.leave_channel(socket.assigns.current_scope, socket.assigns.channel) do
       {:ok, _channel} -> {:noreply, recover_from_missing_conversation(socket, :left_channel)}
       {:error, reason} -> {:noreply, put_flash(socket, :error, channel_error(reason))}
+    end
+  end
+
+  def handle_event(
+        "push_subscribe",
+        %{"subscription" => %{"endpoint" => endpoint} = subscription},
+        socket
+      )
+      when is_binary(endpoint) and endpoint != "" do
+    keys = subscription["keys"] || %{}
+    user = socket.assigns.current_scope.user
+
+    case Notifications.subscribe(user, endpoint, keys["p256dh"], keys["auth"]) do
+      {:ok, _subscription} ->
+        {:reply, %{ok: true}, assign(socket, :push_enabled?, true)}
+
+      {:error, _changeset} ->
+        {:reply, %{ok: false}, socket}
+    end
+  end
+
+  def handle_event("push_subscribe", _params, socket),
+    do: {:reply, %{ok: false}, socket}
+
+  def handle_event("push_unsubscribe", %{"endpoint" => endpoint}, socket)
+      when is_binary(endpoint) and endpoint != "" do
+    user = socket.assigns.current_scope.user
+    Notifications.unsubscribe(user, endpoint)
+
+    {:reply, %{ok: true},
+     assign(socket, :push_enabled?, Notifications.list_subscriptions(user.id) != [])}
+  end
+
+  def handle_event("push_unsubscribe", _params, socket), do: {:reply, %{ok: false}, socket}
+
+  def handle_event("toggle_mute", %{"channel-id" => channel_id}, socket) do
+    user = socket.assigns.current_scope.user
+
+    case Integer.parse(to_string(channel_id)) do
+      {id, ""} ->
+        muted = MapSet.member?(socket.assigns.muted_channel_ids, id)
+        Notifications.set_muted(user, id, not muted)
+
+        muted_channel_ids =
+          if muted,
+            do: MapSet.delete(socket.assigns.muted_channel_ids, id),
+            else: MapSet.put(socket.assigns.muted_channel_ids, id)
+
+        {:noreply, assign(socket, :muted_channel_ids, muted_channel_ids)}
+
+      _ ->
+        {:noreply, socket}
     end
   end
 

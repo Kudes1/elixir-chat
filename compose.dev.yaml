@@ -26,6 +26,9 @@ services:
       OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-1000}
       OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-50}
       OUTBOX_RETENTION_DAYS: ${OUTBOX_RETENTION_DAYS:-7}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@example.com}
     volumes:
       - .:/app
       - mix_deps:/app/deps

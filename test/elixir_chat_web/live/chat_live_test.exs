@@ -8,6 +8,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
   alias ElixirChat.Chat.Channel
   alias ElixirChat.Chat.Message
   alias ElixirChat.Accounts.Scope
+  alias ElixirChat.Notifications
   alias ElixirChat.Repo
   alias ElixirChatWeb.ChatLive.MessageTime
 
@@ -1440,6 +1441,80 @@ defmodule ElixirChatWeb.ChatLiveTest do
 
     assert has_element?(view, "#channel-unread-#{general.id}", "99+")
     assert %{general.id => 151} == Chat.list_unread_counts(Scope.for_user(user), [general.id])
+  end
+
+  test "accepts a complete push subscription and confirms the enabled state", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    render_hook(view, "push_subscribe", %{
+      "subscription" => %{
+        "endpoint" => "https://push/live-success",
+        "keys" => %{"p256dh" => "browser-key", "auth" => "browser-auth"}
+      }
+    })
+
+    assert_reply view, %{ok: true}
+    assert [subscription] = Notifications.list_subscriptions(user.id)
+    assert subscription.endpoint == "https://push/live-success"
+    assert has_element?(view, "#notifications-toggle[aria-pressed='true']")
+  end
+
+  test "rejects an incomplete push subscription without showing a false success", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    render_hook(view, "push_subscribe", %{
+      "subscription" => %{
+        "endpoint" => "https://push/incomplete",
+        "keys" => %{"p256dh" => "browser-key"}
+      }
+    })
+
+    assert_reply view, %{ok: false}
+    assert Notifications.list_subscriptions(user.id) == []
+    assert has_element?(view, "#notifications-toggle[aria-pressed='false']")
+  end
+
+  test "rejects an invalid push subscription without changing the enabled state", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    render_hook(view, "push_subscribe", %{"subscription" => %{"endpoint" => ""}})
+
+    assert_reply view, %{ok: false}
+    assert Notifications.list_subscriptions(user.id) == []
+    assert has_element?(view, "#notifications-toggle[aria-pressed='false']")
+  end
+
+  test "unsubscribes through a confirmed LiveView reply", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    render_hook(view, "push_subscribe", %{
+      "subscription" => %{
+        "endpoint" => "https://push/remove-me",
+        "keys" => %{"p256dh" => "browser-key", "auth" => "browser-auth"}
+      }
+    })
+
+    assert_reply view, %{ok: true}
+    render_hook(view, "push_unsubscribe", %{"endpoint" => "https://push/remove-me"})
+    assert_reply view, %{ok: true}
+    assert Notifications.list_subscriptions(user.id) == []
+    assert has_element?(view, "#notifications-toggle[aria-pressed='false']")
   end
 
   defp message_element_count(view) do

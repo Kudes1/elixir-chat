@@ -22,6 +22,10 @@ defmodule ElixirChat.OutboxPublisher do
           )
         end)
 
+        if event_type == :message_created do
+          ElixirChat.Notifications.enqueue(:channel, message)
+        end
+
         :ok
 
       {event_type, direct, message} ->
@@ -38,6 +42,10 @@ defmodule ElixirChat.OutboxPublisher do
           ElixirChat.Chat.user_topic(direct.second_user_id),
           tuple
         )
+
+        if event_type == :direct_message_created do
+          ElixirChat.Notifications.enqueue(:direct, message, direct)
+        end
 
         :ok
     end
