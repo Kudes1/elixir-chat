@@ -126,9 +126,14 @@
       channel={@channel}
       current_user={@current_scope.user}
       form={@channel_form}
-      memberships={@channel_memberships}
       invite_form={@invite_search_form}
       invite_results={@invite_search_results}
+    />
+    <.channel_members
+      :if={@channel_members_open? && @channel && is_nil(@direct_conversation)}
+      channel={@channel}
+      current_user={@current_scope.user}
+      memberships={@channel_memberships}
       online_user_ids={@online_user_ids}
     />
   </main>

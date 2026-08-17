@@ -69,6 +69,7 @@ defmodule ElixirChatWeb.ChatLive do
      |> assign(:channel_create_open?, false)
      |> assign(:channel_catalog_open?, false)
      |> assign(:channel_settings_open?, false)
+     |> assign(:channel_members_open?, false)
      |> assign(:channel_form, channel_form())
      |> assign(:available_channels, [])
      |> assign(:channel_memberships, [])
@@ -238,6 +239,17 @@ defmodule ElixirChatWeb.ChatLive do
   def handle_event("close_channel_settings", _params, socket),
     do: {:noreply, assign(socket, :channel_settings_open?, false)}
 
+  def handle_event("open_channel_members", _params, %{assigns: %{channel: channel}} = socket)
+      when not is_nil(channel) do
+    {:noreply,
+     socket
+     |> assign(:channel_members_open?, true)
+     |> refresh_memberships()}
+  end
+
+  def handle_event("close_channel_members", _params, socket),
+    do: {:noreply, assign(socket, :channel_members_open?, false)}
+
   def handle_event("update_channel", %{"channel" => params}, socket) do
     case Chat.update_channel(socket.assigns.current_scope, socket.assigns.channel, params) do
       {:ok, channel} ->
@@ -245,6 +257,7 @@ defmodule ElixirChatWeb.ChatLive do
          socket
          |> assign(:channel, channel)
          |> assign(:channel_settings_open?, false)
+         |> assign(:channel_members_open?, false)
          |> refresh_channels()
          |> put_flash(:info, "Канал обновлён.")}
 
@@ -655,6 +668,7 @@ defmodule ElixirChatWeb.ChatLive do
     |> assign(:current_other_user, nil)
     |> assign(:subscribed_channel_id, nil)
     |> assign(:channel_settings_open?, false)
+    |> assign(:channel_members_open?, false)
     |> reset_message_assigns()
     |> stream(:messages, [], reset: true)
   end
@@ -791,6 +805,9 @@ defmodule ElixirChatWeb.ChatLive do
   defp refresh_memberships(socket), do: assign(socket, :channel_memberships, [])
 
   defp refresh_memberships_if_open(%{assigns: %{channel_settings_open?: true}} = socket),
+    do: refresh_memberships(socket)
+
+  defp refresh_memberships_if_open(%{assigns: %{channel_members_open?: true}} = socket),
     do: refresh_memberships(socket)
 
   defp refresh_memberships_if_open(socket), do: socket

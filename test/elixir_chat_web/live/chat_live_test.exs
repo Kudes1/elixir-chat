@@ -777,7 +777,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     refute has_element?(view, ".direct-heading .avatar-status-dot--online")
 
     view |> element("#channel-#{channel.id}") |> render_click()
-    view |> element("#open-channel-settings") |> render_click()
+    view |> element("#open-channel-members") |> render_click()
     assert has_element?(view, "#channel-member-#{other_user.id} .avatar-status-dot")
     refute has_element?(view, "#channel-member-#{other_user.id} .avatar-status-dot--online")
 
@@ -868,15 +868,28 @@ defmodule ElixirChatWeb.ChatLiveTest do
     view |> element("#open-channel-settings") |> render_click()
     assert has_element?(view, "#channel-details", "Объявления")
     assert has_element?(view, "#channel-details", "Публичный канал")
-    assert has_element?(view, "#channel-members-title", "Участники канала")
-    assert has_element?(view, "#channel-members .channel-members-heading > span", "2")
-    assert has_element?(view, "#channel-member-list[role='list'][tabindex='0']")
-    assert has_element?(view, "#channel-member-#{owner.id}", "администратор")
-    assert has_element?(view, "#channel-member-#{user.id}")
+    refute has_element?(view, "#channel-member-list")
     assert has_element?(view, "#leave-channel", "Выйти из канала")
     refute has_element?(view, "#edit-channel-form")
     refute has_element?(view, "#archive-channel")
 
+    view |> element("#close-channel-settings") |> render_click()
+    refute has_element?(view, "#channel-settings")
+
+    view |> element("#open-channel-members") |> render_click()
+    assert has_element?(view, "#channel-members-title")
+    assert has_element?(view, "#channel-members .channel-members-heading > span", "2")
+    assert has_element?(view, "#channel-member-list[role='list'][tabindex='0']")
+    assert has_element?(view, "#channel-member-#{owner.id}", "администратор")
+    assert has_element?(view, "#channel-member-#{user.id}")
+    refute has_element?(view, "#leave-channel")
+    refute has_element?(view, "#edit-channel-form")
+    refute has_element?(view, "#archive-channel")
+
+    view |> element("#close-channel-members") |> render_click()
+    refute has_element?(view, "#channel-members-modal")
+
+    view |> element("#open-channel-settings") |> render_click()
     view |> element("#leave-channel") |> render_click()
     assert_patch(view, ~p"/channels/#{general.public_id}")
   end
@@ -909,6 +922,8 @@ defmodule ElixirChatWeb.ChatLiveTest do
     member_view |> element("#channel-#{channel.id}") |> render_click()
     assert_patch(member_view, ~p"/channels/#{channel.public_id}")
 
+    owner_view |> element("#close-channel-settings") |> render_click()
+    owner_view |> element("#open-channel-members") |> render_click()
     owner_view |> element("#remove-member-#{member.id}") |> render_click()
     render(member_view)
     assert_patch(member_view, ~p"/channels/#{general.public_id}")
@@ -937,11 +952,13 @@ defmodule ElixirChatWeb.ChatLiveTest do
     |> render_submit()
 
     assert has_element?(view, ".channel-title", "new-name")
-    view |> element("#open-channel-settings") |> render_click()
+    view |> element("#open-channel-members") |> render_click()
     view |> element("#transfer-owner-#{member.id}") |> render_click()
     assert {:ok, transferred} = Chat.get_channel(member_scope, channel.id)
     assert transferred.owner_id == member.id
 
+    view |> element("#close-channel-members") |> render_click()
+    view |> element("#open-channel-settings") |> render_click()
     view |> element("#leave-channel") |> render_click()
     assert_patch(view, ~p"/channels/#{general.public_id}")
   end

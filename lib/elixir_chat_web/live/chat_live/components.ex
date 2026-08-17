@@ -257,7 +257,14 @@ defmodule ElixirChatWeb.ChatLive.Components do
         </div>
       <% end %>
       <div class="channel-header-actions">
-        <span :if={is_nil(@other_user)} class="online-indicator"><i></i>{@online_count} в сети</span>
+        <button
+          :if={is_nil(@other_user)}
+          id="open-channel-members"
+          type="button"
+          class="online-indicator"
+          phx-click="open_channel_members"
+          aria-label="Показать участников канала"
+        ><i></i>{@online_count} в сети</button>
         <button
           :if={is_nil(@other_user)}
           id="open-channel-settings"
@@ -368,10 +375,8 @@ defmodule ElixirChatWeb.ChatLive.Components do
   attr :channel, :any, required: true
   attr :current_user, :any, required: true
   attr :form, :any, required: true
-  attr :memberships, :list, required: true
   attr :invite_form, :any, required: true
   attr :invite_results, :list, required: true
-  attr :online_user_ids, :any, required: true
 
   def channel_settings(assigns) do
     ~H"""
@@ -456,13 +461,58 @@ defmodule ElixirChatWeb.ChatLive.Components do
             phx-value-user-id={user.id}
           >{user.display_name} <small>@{user.login}<span :if={user.online?}> · в сети</span></small></button>
         </div>
+        <button
+          :if={@channel.owner_id != @current_user.id && !@channel.is_general}
+          id="leave-channel"
+          type="button"
+          class="channel-danger-action"
+          phx-click="leave_channel"
+          data-confirm="Покинуть этот канал?"
+        >Выйти из канала</button>
+        <button
+          :if={@channel.owner_id == @current_user.id && !@channel.is_general}
+          id="archive-channel"
+          type="button"
+          class="channel-danger-action"
+          phx-click="archive_channel"
+          data-confirm="Архивировать канал? История сохранится, но доступ будет закрыт."
+        >Архивировать канал</button>
+      </section>
+    </div>
+    """
+  end
+
+  attr :channel, :any, required: true
+  attr :current_user, :any, required: true
+  attr :memberships, :list, required: true
+  attr :online_user_ids, :any, required: true
+
+  def channel_members(assigns) do
+    ~H"""
+    <div
+      id="channel-members-modal"
+      class="channel-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="channel-members-title"
+    >
+      <section class="channel-modal" phx-window-keydown="close_channel_members" phx-key="escape">
+        <header>
+          <h2 id="channel-members-title">Участники #<span>{@channel.name}</span></h2>
+          <button
+            id="close-channel-members"
+            type="button"
+            phx-click="close_channel_members"
+            aria-label="Закрыть список участников"
+          ><.icon name="hero-x-mark" class="size-5" /></button>
+        </header>
         <section
           id="channel-members"
           class="channel-members-section"
           aria-labelledby="channel-members-title"
         >
           <header class="channel-members-heading">
-            <h3 id="channel-members-title">Участники канала</h3>
+            <h3>Участники</h3>
             <span>{length(@memberships)}</span>
           </header>
           <div
@@ -516,22 +566,6 @@ defmodule ElixirChatWeb.ChatLive.Components do
             </div>
           </div>
         </section>
-        <button
-          :if={@channel.owner_id != @current_user.id && !@channel.is_general}
-          id="leave-channel"
-          type="button"
-          class="channel-danger-action"
-          phx-click="leave_channel"
-          data-confirm="Покинуть этот канал?"
-        >Выйти из канала</button>
-        <button
-          :if={@channel.owner_id == @current_user.id && !@channel.is_general}
-          id="archive-channel"
-          type="button"
-          class="channel-danger-action"
-          phx-click="archive_channel"
-          data-confirm="Архивировать канал? История сохранится, но доступ будет закрыт."
-        >Архивировать канал</button>
       </section>
     </div>
     """
