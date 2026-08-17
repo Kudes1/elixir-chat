@@ -5,11 +5,17 @@ Self-hosted командный чат на Elixir, Phoenix и LiveView. Теку
 
 ## Запуск и разработка
 
-Нужен только Docker Engine с Docker Compose:
+Нужен только Docker Engine с Docker Compose.
+
+### Разработка
+
+`compose.yaml` — production-стек. Для разработки поверх него подключается
+`compose.dev.yaml`, который переключает web-сервис на `development`-таргет
+Dockerfile, монтирует исходники для hot reload и запускает dev-entrypoint:
 
 ```sh
 cp .env.example .env
-docker compose up --build
+docker compose -f compose.yaml -f compose.dev.yaml up --build
 ```
 
 Откройте [http://localhost:4000](http://localhost:4000). Миграции и стартовые
@@ -19,15 +25,21 @@ docker compose up --build
 Проверки также выполняются внутри контейнера:
 
 ```sh
-docker compose exec web mix test
-docker compose exec web mix precommit
+docker compose -f compose.yaml -f compose.dev.yaml exec web mix test
+docker compose -f compose.yaml -f compose.dev.yaml exec web mix precommit
 ```
 
-Production-сборка также проверяет gzip-бюджеты основных ассетов: не более
-55 КБ для JavaScript и 20 КБ для CSS. Проверка входит в `mix assets.deploy`.
+Вместо длинных команд можно использовать `make`:
 
-Остановить сервисы можно через `docker compose down`. Данные PostgreSQL
-останутся в именованном volume. `docker compose down -v` удаляет базу и кэши
+```sh
+make dev-up     # docker compose -f compose.yaml -f compose.dev.yaml up --build
+make dev-down
+make test
+make precommit
+```
+
+Остановить сервисы можно через `docker compose -f compose.yaml -f compose.dev.yaml down`.
+Данные PostgreSQL останутся в именованном volume. `down -v` удаляет базу и кэши
 зависимостей без возможности восстановления.
 
 ## Что поддерживается
@@ -43,23 +55,24 @@ Production-сборка также проверяет gzip-бюджеты осн
 Личные диалоги используют приватные каналы, доступные только двум участникам.
 Групповые приватные каналы и уведомления вне приложения пока не поддерживаются.
 
-## Production image
+## Production
 
-Минимальный release-образ собирается и запускается через production override:
+`compose.yaml` самодостаточен и предназначен для прода: один файл запускает
+PostgreSQL и минимальный release-образ web-сервиса. Запуск одной командой:
 
 ```sh
 cp .env.example .env
 # Замените SECRET_KEY_BASE и POSTGRES_PASSWORD на production-значения.
-docker compose -f compose.yaml -f compose.prod.yaml up -d --build
+docker compose up -d --build
 ```
 
-В этом режиме web-сервис использует release без bind-mount исходников и без
-Phoenix code reloader. Перед стартом release автоматически применяет миграции
-и запускает идемпотентный seed. Для остановки используйте тот же набор файлов:
+Web-сервис использует release без bind-mount исходников и без Phoenix code
+reloader. Перед стартом release автоматически применяет миграции и запускает
+идемпотентный seed. Остановка — той же командой `docker compose down`.
+`make prod-up` и `make prod-down` делают то же самое.
 
-```sh
-docker compose -f compose.yaml -f compose.prod.yaml down
-```
+Production-сборка также проверяет gzip-бюджеты основных ассетов: не более
+55 КБ для JavaScript и 20 КБ для CSS. Проверка входит в `mix assets.deploy`.
 
 Образ отдельно можно собрать командой:
 
@@ -70,6 +83,28 @@ docker build --target production -t orbit:latest .
 При запуске production-контейнера обязательны `DATABASE_URL` и
 `SECRET_KEY_BASE`. Не используйте значения из `.env.example` за пределами
 локальной разработки.
+
+### Первый администратор
+
+Первого администратора проще всего создать через `bin/orbit-admin` в web-контейнере.
+Команда выполняет миграции, idempotent-seed и в одной транзакции создаёт
+одноразовое приглашение (для bootstrap — если администратора ещё нет):
+
+```sh
+make admin-bootstrap LOGIN=alice NAME="Alice"
+```
+
+что эквивалентно
+
+```sh
+docker compose exec web bin/orbit-admin bootstrap --login alice --name "Alice"
+```
+
+Скрипт печатает путь `/invitation/TOKEN`. Добавьте этот путь к любому
+разрешённому домену сервиса и откройте его в браузере, чтобы зарегистрировать
+первого администратора. Вместо `bootstrap` доступны `transfer --to-login LOGIN`
+(сделать админом существующего пользователя) и `reset` (перевыпустить пароль
+админу) — в Makefile им соответствуют `make admin-transfer` и `make admin-reset`.
 
 ## Несколько публичных доменов
 

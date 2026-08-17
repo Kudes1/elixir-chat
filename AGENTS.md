@@ -6,10 +6,16 @@ The application **must be built and run with Docker Compose**. Do not rely on a 
 
 ```sh
 cp .env.example .env
-docker compose up --build
+docker compose -f compose.yaml -f compose.dev.yaml up --build
 ```
 
-Use `docker compose exec web mix test` for tests and `docker compose exec web mix precommit` before handing off changes. Stop services with `docker compose down`; use `down -v` only when intentionally deleting local database data. Keep `Dockerfile`, `compose.yaml`, and `.env.example` in sync with runtime configuration.
+`compose.yaml` is the production stack; `compose.dev.yaml` overlays it for local
+development (hot reload, bind mounts). Use `docker compose -f compose.yaml -f compose.dev.yaml exec web mix test`
+for tests and `docker compose -f compose.yaml -f compose.dev.yaml exec web mix precommit`
+before handing off changes. `make dev-up`, `make test` and `make precommit` wrap
+the same commands. Stop services with `docker compose -f compose.yaml -f compose.dev.yaml down`;
+use `down -v` only when intentionally deleting local database data. Keep `Dockerfile`,
+`compose.yaml`, `compose.dev.yaml`, and `.env.example` in sync with runtime configuration.
 
 ## Phoenix and LiveView
 

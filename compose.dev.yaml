@@ -1,0 +1,38 @@
+# Development overlay. Run together with the production base compose.yaml:
+#
+#     docker compose -f compose.yaml -f compose.dev.yaml up --build
+#
+# It switches the web service to the `development` Docker build target, mounts
+# the sources for hot reload, and runs the dev entrypoint instead of the
+# release binary.
+services:
+  web:
+    build:
+      context: .
+      target: development
+    entrypoint: ["sh", "/app/docker-entrypoint-dev.sh"]
+    command: ["mix", "phx.server"]
+    environment: !override
+      DB_HOST: db
+      PHX_IP: 0.0.0.0
+      PORT: 4000
+      POSTGRES_DB: ${POSTGRES_DB:-elixir_chat}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POOL_SIZE: ${POOL_SIZE:-10}
+      POOL_COUNT: ${POOL_COUNT:-1}
+      DB_SLOW_QUERY_MS: ${DB_SLOW_QUERY_MS:-500}
+      DB_QUEUE_WARN_MS: ${DB_QUEUE_WARN_MS:-100}
+      OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-1000}
+      OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-50}
+      OUTBOX_RETENTION_DAYS: ${OUTBOX_RETENTION_DAYS:-7}
+    volumes:
+      - .:/app
+      - mix_deps:/app/deps
+      - mix_build:/app/_build
+    ports:
+      - "127.0.0.1:${PORT:-4000}:4000"
+
+volumes:
+  mix_deps:
+  mix_build:

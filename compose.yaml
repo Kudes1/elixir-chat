@@ -17,20 +17,17 @@ services:
   web:
     build:
       context: .
-      target: development
+      target: production
+    image: elixir-chat:prod
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-    entrypoint: ["sh", "/app/docker-entrypoint-dev.sh"]
-    command: ["mix", "phx.server"]
     environment:
-      DB_HOST: db
-      PHX_IP: 0.0.0.0
+      DATABASE_URL: ecto://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db/${POSTGRES_DB:-elixir_chat}
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?Set SECRET_KEY_BASE in .env}
+      PHX_SERVER: "true"
       PORT: 4000
-      POSTGRES_DB: ${POSTGRES_DB:-elixir_chat}
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POOL_SIZE: ${POOL_SIZE:-10}
       POOL_COUNT: ${POOL_COUNT:-1}
       DB_SLOW_QUERY_MS: ${DB_SLOW_QUERY_MS:-500}
@@ -38,14 +35,9 @@ services:
       OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-1000}
       OUTBOX_BATCH_SIZE: ${OUTBOX_BATCH_SIZE:-50}
       OUTBOX_RETENTION_DAYS: ${OUTBOX_RETENTION_DAYS:-7}
-    volumes:
-      - .:/app
-      - mix_deps:/app/deps
-      - mix_build:/app/_build
+      DNS_CLUSTER_QUERY: ${DNS_CLUSTER_QUERY:-}
     ports:
-      - "${PORT:-4000}:4000"
+      - "127.0.0.1:${PORT:-4000}:4000"
 
 volumes:
   postgres_data:
-  mix_deps:
-  mix_build:

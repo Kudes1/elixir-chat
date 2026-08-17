@@ -19,8 +19,13 @@ defmodule ElixirChat.Release do
 
   def admin do
     load_app()
-    Application.ensure_all_started(@app)
 
+    for repo <- Application.fetch_env!(@app, :ecto_repos) do
+      Ecto.Migrator.with_repo(repo, fn _repo -> run_admin_command() end)
+    end
+  end
+
+  defp run_admin_command do
     result =
       case System.fetch_env!("ORBIT_ADMIN_COMMAND") do
         "bootstrap" ->
@@ -37,7 +42,8 @@ defmodule ElixirChat.Release do
       end
 
     case result do
-      {:ok, _record, token} -> IO.puts(ElixirChatWeb.InvitationPath.for_token(token))
+      {:ok, {_invitation, token}} -> IO.puts("/invitation/" <> token)
+      {:ok, _record, token} -> IO.puts("/invitation/" <> token)
       {:ok, _record} -> IO.puts("Administrator transferred.")
       {:error, reason} -> raise "admin command failed: #{inspect(reason)}"
     end
