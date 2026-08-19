@@ -224,6 +224,25 @@ defmodule ElixirChatWeb.ChatLive.Components do
             class="size-4"
           /></span>
         </button>
+        <button
+          id="notification-sound-toggle"
+          type="button"
+          class="notifications-toggle"
+          phx-hook="NotificationSound"
+          data-notification-sound-toggle
+          aria-label="Звук уведомлений"
+          aria-pressed="true"
+          title="Отключить звук уведомлений"
+        >
+          <span class="notifications-icon" data-notification-sound-icon="on"><.icon
+            name="hero-speaker-wave"
+            class="size-4"
+          /></span>
+          <span class="notifications-icon" data-notification-sound-icon="off" hidden><.icon
+            name="hero-speaker-x-mark"
+            class="size-4"
+          /></span>
+        </button>
         <.link
           href={~p"/logout"}
           method="delete"

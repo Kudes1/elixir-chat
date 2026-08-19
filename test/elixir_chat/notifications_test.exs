@@ -109,7 +109,7 @@ defmodule ElixirChat.NotificationsTest do
     # delivery attempt made by `process/2` itself — otherwise there would be
     # nothing left in `push_deliveries` for the resubscribe below to clean up.
     enable_push([{:error, {:http_error, 503, "unavailable"}}])
-    assert :ok = Notifications.process(:channel, message)
+    assert :ok = Notifications.process(:channel, message, channel_event(message))
     assert_receive {:web_push, _, _}
     assert Repo.aggregate(PushDelivery, :count) == 1
 
@@ -182,7 +182,7 @@ defmodule ElixirChat.NotificationsTest do
     {:ok, message} = Chat.create_message(scope, channel, %{body: "обычное сообщение всем"})
 
     enable_push([])
-    assert :ok = Notifications.process(:channel, message)
+    assert :ok = Notifications.process(:channel, message, channel_event(message))
     assert Repo.aggregate(PushDelivery, :count) == 0
   end
 
@@ -203,7 +203,7 @@ defmodule ElixirChat.NotificationsTest do
     assert message.author_name == author.display_name
 
     enable_push([])
-    assert :ok = Notifications.process(:channel, message)
+    assert :ok = Notifications.process(:channel, message, channel_event(message))
 
     assert_receive {:web_push, subscription_json, payload_json}
 
@@ -223,7 +223,7 @@ defmodule ElixirChat.NotificationsTest do
     refute_receive {:web_push, _, _}, 20
 
     Notifications.set_muted(recipient, channel.id, true)
-    assert :ok = Notifications.process(:channel, message)
+    assert :ok = Notifications.process(:channel, message, channel_event(message))
     refute_receive {:web_push, _, _}, 20
   end
 
@@ -239,7 +239,7 @@ defmodule ElixirChat.NotificationsTest do
       Chat.create_message(Scope.for_user(user), direct.channel, %{body: "привет"})
 
     enable_push([])
-    assert :ok = Notifications.process(:direct, message, direct)
+    assert :ok = Notifications.process(:direct, message, direct, direct_event(message, direct))
 
     assert_receive {:web_push, subscription_json, payload_json}
     assert Jason.decode!(subscription_json)["endpoint"] == "https://fcm.googleapis.com/other"
@@ -258,7 +258,7 @@ defmodule ElixirChat.NotificationsTest do
     {:ok, message} = Chat.create_message(scope, channel, %{body: "@#{recipient.login} привет"})
 
     enable_push([{:error, :expired}])
-    assert :ok = Notifications.process(:channel, message)
+    assert :ok = Notifications.process(:channel, message, channel_event(message))
     assert_receive {:web_push, _, _}
     assert Notifications.list_subscriptions(recipient.id) == []
   end
@@ -271,7 +271,7 @@ defmodule ElixirChat.NotificationsTest do
 
     enable_push([{:error, {:http_error, 503, "unavailable"}}])
 
-    assert :ok = Notifications.process(:channel, message)
+    assert :ok = Notifications.process(:channel, message, channel_event(message))
     assert_receive {:web_push, _, _}
 
     assert %PushDelivery{} = Repo.one(PushDelivery)
@@ -290,7 +290,7 @@ defmodule ElixirChat.NotificationsTest do
       })
 
     enable_push([{:raise, "encryption failed"}, {:ok, :sent}])
-    assert :ok = Notifications.process(:channel, message)
+    assert :ok = Notifications.process(:channel, message, channel_event(message))
 
     assert_receive {:web_push, _, _}
     assert_receive {:web_push, _, _}
@@ -339,7 +339,7 @@ defmodule ElixirChat.NotificationsTest do
     {:ok, message} = Chat.create_message(scope, channel, %{body: "@#{recipient.login} привет"})
 
     enable_push([{:error, {:http_error, 503, "unavailable"}}])
-    assert :ok = Notifications.process(:channel, message)
+    assert :ok = Notifications.process(:channel, message, channel_event(message))
     assert_receive {:web_push, _, _}
 
     assert %PushDelivery{} = delivery = Repo.one(PushDelivery)
@@ -360,7 +360,7 @@ defmodule ElixirChat.NotificationsTest do
     {:ok, message} = Chat.create_message(scope, channel, %{body: "@#{recipient.login} привет"})
 
     enable_push([{:error, {:http_error, 503, "unavailable"}}])
-    assert :ok = Notifications.process(:channel, message)
+    assert :ok = Notifications.process(:channel, message, channel_event(message))
     assert_receive {:web_push, _, _}
 
     cutoff = DateTime.add(DateTime.utc_now(:second), -3600)
@@ -464,5 +464,13 @@ defmodule ElixirChat.NotificationsTest do
   defp channel_fixture(attrs) do
     defaults = %{name: "channel-#{System.unique_integer([:positive])}", kind: :public}
     Repo.insert!(Chat.Channel.changeset(%Chat.Channel{}, Map.merge(defaults, attrs)))
+  end
+
+  defp channel_event(message) do
+    Notifications.build_channel_event(Ecto.UUID.generate(), message)
+  end
+
+  defp direct_event(message, direct) do
+    Notifications.build_direct_event(Ecto.UUID.generate(), message, direct)
   end
 end

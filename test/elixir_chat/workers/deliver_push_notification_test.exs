@@ -125,7 +125,8 @@ defmodule ElixirChat.Workers.DeliverPushNotificationTest do
     config = Application.fetch_env!(:elixir_chat, Notifications)
     Application.put_env(:elixir_chat, Notifications, Keyword.put(config, :enabled, true))
 
-    assert :ok = Notifications.process(:channel, message)
+    event = Notifications.build_channel_event(Ecto.UUID.generate(), message)
+    assert :ok = Notifications.process(:channel, message, event)
 
     Repo.get_by!(PushDelivery, subscription_id: subscription.id, message_id: message.id)
   end

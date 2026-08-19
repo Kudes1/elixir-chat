@@ -66,8 +66,12 @@ defmodule ElixirChatWeb.ChatLive.MessageWindow do
     |> push_event("scroll_to_latest", %{})
   end
 
-  def receive_message(%{assigns: %{at_latest?: true}} = socket, message),
-    do: append_message(socket, message)
+  def receive_message(%{assigns: %{at_latest?: true}} = socket, message) do
+    already_loaded? = MapSet.member?(socket.assigns.loaded_message_ids, message.id)
+    socket = append_message(socket, message)
+
+    if already_loaded?, do: socket, else: push_event(socket, "scroll_to_latest", %{})
+  end
 
   def receive_message(socket, message) do
     if MapSet.member?(socket.assigns.loaded_message_ids, message.id),

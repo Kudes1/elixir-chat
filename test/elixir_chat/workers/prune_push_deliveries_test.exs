@@ -101,7 +101,8 @@ defmodule ElixirChat.Workers.PrunePushDeliveriesTest do
     {:ok, message} =
       Chat.create_message(scope, channel, %{body: "@#{recipient.login} привет"})
 
-    assert :ok = Notifications.process(:channel, message)
+    event = Notifications.build_channel_event(Ecto.UUID.generate(), message)
+    assert :ok = Notifications.process(:channel, message, event)
     assert_receive {:web_push, _, _}
 
     Repo.get_by!(PushDelivery, recipient_id: recipient.id, message_id: message.id)

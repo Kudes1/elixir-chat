@@ -110,6 +110,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     other_user = register_user(%{display_name: "Олег", login: "notify.sender"})
     {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{product.public_id}")
     general_id = general.id
+    general_url = "/channels/#{general.public_id}"
 
     {:ok, _message} =
       Chat.create_message(Scope.for_user(other_user), general, %{body: "Пропущенное сообщение"})
@@ -117,9 +118,9 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert_push_event(view, "notify", %{
       type: "channel",
       active: false,
-      title: "#general",
-      sender_name: "Олег",
-      sender_login: "notify.sender",
+      title: "#general: Олег",
+      body: "Пропущенное сообщение",
+      url: ^general_url,
       channel_id: ^general_id
     })
   end
@@ -186,7 +187,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     refute_push_event(view, "notify", %{})
   end
 
-  test "pushes a notify event for a direct message with no title, since the sender's name already says who it's from",
+  test "pushes a notify event for a direct message, titled with the sender's name",
        %{
          conn: conn,
          general: general,
@@ -199,6 +200,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
 
     {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
     direct_channel_id = direct.channel.id
+    direct_url = "/direct/#{direct.channel.public_id}"
 
     {:ok, _message} =
       Chat.create_message(Scope.for_user(other_user), direct.channel, %{body: "Личное"})
@@ -207,9 +209,9 @@ defmodule ElixirChatWeb.ChatLiveTest do
       type: "direct",
       priority: "high",
       active: false,
-      title: nil,
-      sender_name: "Мария",
-      sender_login: "notify.direct",
+      title: "Мария",
+      body: "Личное",
+      url: ^direct_url,
       channel_id: ^direct_channel_id
     })
   end
@@ -282,6 +284,17 @@ defmodule ElixirChatWeb.ChatLiveTest do
     refute_push_event(view, "notify", %{})
   end
 
+  test "responds to a liveness ping with an empty reply", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    render_hook(view, "ping", %{})
+    assert_reply view, %{}
+  end
+
   test "sends and receives a persisted message", %{conn: conn, general: general, user: user} do
     conn = log_in_user(conn, user)
     {:ok, view, _html} = live(conn, ~p"/channels/#{general.public_id}")
@@ -293,6 +306,23 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert has_element?(view, ".message-list article p", "Новое сообщение")
     assert [message] = Chat.list_messages(general.id)
     assert message.body == "Новое сообщение"
+  end
+
+  test "auto-scrolls to the bottom when a new message arrives while viewing the live tail", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    other_user = register_user(%{display_name: "Ирина", login: "autoscroll.other"})
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    # drain the "scroll_to_latest" push emitted on initial mount before asserting the one
+    # triggered by the incoming message below.
+    assert_push_event(view, "scroll_to_latest", %{})
+
+    Chat.create_message(Scope.for_user(other_user), general, %{body: "Привет"})
+
+    assert_push_event(view, "scroll_to_latest", %{})
   end
 
   test "shows distinct logins beside identical display names", %{

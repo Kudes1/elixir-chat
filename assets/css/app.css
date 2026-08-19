@@ -796,7 +796,7 @@ button {
 
 .sidebar-profile {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto auto;
+  grid-template-columns: 34px minmax(0, 1fr) auto auto auto;
   gap: 10px;
   align-items: center;
   margin: 0 12px;
@@ -833,6 +833,10 @@ button {
 
 .notifications-toggle[data-notifications-state="blocked"] {
   color: var(--orbit-text-subtle);
+}
+
+.notifications-toggle[data-sound-state="on"] {
+  color: var(--orbit-accent);
 }
 
 .notifications-toggle:disabled {
@@ -1034,66 +1038,6 @@ button {
   overscroll-behavior: contain;
   scrollbar-color: #4a5265 transparent;
   scrollbar-width: thin;
-}
-
-#orbit-toast-container {
-  position: fixed;
-  top: 16px;
-  right: 16px;
-  z-index: 70;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: min(340px, calc(100vw - 32px));
-  pointer-events: none;
-}
-
-.orbit-toast {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 12px 14px;
-  color: var(--orbit-text);
-  background: var(--orbit-surface-raised);
-  border: 1px solid var(--orbit-border-strong);
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
-  opacity: 0;
-  transform: translateY(-8px);
-  transition:
-    opacity 160ms ease,
-    transform 160ms ease;
-  cursor: pointer;
-  pointer-events: auto;
-}
-
-.orbit-toast-visible {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-.orbit-toast-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--orbit-text-muted);
-}
-
-.orbit-toast-sender {
-  font-size: 13px;
-}
-
-.orbit-toast-login {
-  color: var(--orbit-text-muted);
-  font-size: 12px;
-  font-weight: 400;
-}
-
-.orbit-toast-preview {
-  overflow: hidden;
-  color: var(--orbit-text-muted);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .jump-to-latest {

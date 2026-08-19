@@ -10,6 +10,7 @@ defmodule ElixirChat.Notifications do
   alias ElixirChat.Notifications.{
     NotificationPreference,
     EndpointPolicy,
+    Event,
     Notification,
     PushDelivery,
     PushSubscription,
@@ -160,14 +161,14 @@ defmodule ElixirChat.Notifications do
   end
 
   @doc "Enqueues durable push delivery jobs for a freshly created message."
-  def enqueue(:channel, %Message{} = message) do
-    if enabled?(), do: :ok = process(:channel, message)
+  def enqueue(:channel, %Message{} = message, %Event{} = event) do
+    if enabled?(), do: :ok = process(:channel, message, event)
 
     :ok
   end
 
-  def enqueue(:direct, %Message{} = message, %DirectConversation{} = direct) do
-    if enabled?(), do: :ok = process(:direct, message, direct)
+  def enqueue(:direct, %Message{} = message, %DirectConversation{} = direct, %Event{} = event) do
+    if enabled?(), do: :ok = process(:direct, message, direct, event)
 
     :ok
   end
@@ -177,15 +178,15 @@ defmodule ElixirChat.Notifications do
   # conversation member, so an ordinary message to a 200-person channel does
   # not queue 199 push deliveries.
   @doc false
-  def process(:channel, %Message{} = message) do
+  def process(:channel, %Message{} = message, %Event{} = event) do
     recipient_ids = mentioned_recipient_ids(message.id)
-    Enum.each(recipient_ids, &queue_channel_push(&1, message))
+    Enum.each(recipient_ids, &queue_channel_push(&1, message, event))
     :ok
   end
 
-  def process(:direct, %Message{} = message, %DirectConversation{} = direct) do
+  def process(:direct, %Message{} = message, %DirectConversation{} = direct, %Event{} = event) do
     other_id = DirectConversation.other_user(direct, message.user_id).id
-    queue_direct_push(other_id, message, direct)
+    queue_direct_push(other_id, message, direct, event)
     :ok
   end
 
@@ -207,54 +208,59 @@ defmodule ElixirChat.Notifications do
     )
   end
 
-  defp queue_channel_push(recipient_id, %Message{} = message) do
-    if muted?(recipient_id, message.channel_id) do
-      Logger.debug("push notification skipped (muted)",
-        message_id: message.id,
-        recipient_id: recipient_id,
-        channel_id: message.channel_id
-      )
-
-      :ok
-    else
-      payload =
-        push_payload(
-          "##{message.channel.name}: #{message.author_name}",
-          message.body,
-          "/channels/#{message.channel.public_id}"
-        )
-
-      queue_deliveries(recipient_id, payload, message)
-    end
-  end
-
-  defp queue_direct_push(recipient_id, %Message{} = message, %DirectConversation{} = direct) do
-    if muted?(recipient_id, message.channel_id) do
-      Logger.debug("push notification skipped (muted)",
-        message_id: message.id,
-        recipient_id: recipient_id,
-        channel_id: message.channel_id
-      )
-
-      :ok
-    else
-      payload =
-        push_payload(
-          message.author_name,
-          message.body,
-          "/direct/#{direct.channel.public_id}"
-        )
-
-      queue_deliveries(recipient_id, payload, message)
-    end
-  end
-
-  defp push_payload(title, body, url) do
-    %{
-      title: title,
-      body: preview(body),
-      url: url
+  @doc "Builds the single notification Event shared by the WebSocket and Web Push transports for a channel message."
+  def build_channel_event(event_id, %Message{} = message) do
+    %Event{
+      event_id: event_id,
+      type: "channel",
+      title: "##{message.channel.name}: #{message.author_name}",
+      body: preview(message.body),
+      url: "/channels/#{message.channel.public_id}"
     }
+  end
+
+  @doc "Builds the single notification Event shared by the WebSocket and Web Push transports for a direct message."
+  def build_direct_event(event_id, %Message{} = message, %DirectConversation{} = direct) do
+    %Event{
+      event_id: event_id,
+      type: "direct",
+      title: message.author_name,
+      body: preview(message.body),
+      url: "/direct/#{direct.channel.public_id}"
+    }
+  end
+
+  defp queue_channel_push(recipient_id, %Message{} = message, %Event{} = event) do
+    if muted?(recipient_id, message.channel_id) do
+      Logger.debug("push notification skipped (muted)",
+        message_id: message.id,
+        recipient_id: recipient_id,
+        channel_id: message.channel_id
+      )
+
+      :ok
+    else
+      queue_deliveries(recipient_id, Map.from_struct(event), message)
+    end
+  end
+
+  defp queue_direct_push(
+         recipient_id,
+         %Message{} = message,
+         %DirectConversation{} = _direct,
+         %Event{} = event
+       ) do
+    if muted?(recipient_id, message.channel_id) do
+      Logger.debug("push notification skipped (muted)",
+        message_id: message.id,
+        recipient_id: recipient_id,
+        channel_id: message.channel_id
+      )
+
+      :ok
+    else
+      queue_deliveries(recipient_id, Map.from_struct(event), message)
+    end
   end
 
   defp preview(body) when is_binary(body) do

@@ -25,8 +25,15 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/elixir_chat"
 import topbar from "../vendor/topbar"
 import {decide as decideNotification} from "./notification_policy"
-import {showToast, playNotificationSound} from "./notification_ui"
+import {playNotificationSound} from "./notification_ui"
 import {createCooldownState, shouldPlaySound} from "./sound_cooldown"
+import {
+  createLivenessState,
+  shouldProbe,
+  suspectedSuspend,
+  PING_TIMEOUT_MS,
+  SUSPEND_TICK_MS,
+} from "./connection_liveness"
 
 const systemTheme = () => matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
 const setTheme = theme => {
@@ -719,6 +726,84 @@ const PushNotifications = {
   },
 }
 
+// Whether to play the notification sound at all — purely a browser/device
+// preference (localStorage), independent of the toast/system-notification
+// decision made by notification_policy.js. Read once at load, then kept in
+// sync both from this tab's own toggle clicks and from a `storage` event
+// fired by another tab toggling the same preference.
+const NOTIFICATION_SOUND_STORAGE_KEY = "orbit:notification-sound:v1"
+
+const readNotificationSoundEnabled = () => {
+  try {
+    return localStorage.getItem(NOTIFICATION_SOUND_STORAGE_KEY) !== "off"
+  } catch (_error) {
+    return true
+  }
+}
+
+const notificationSoundState = {
+  enabled: readNotificationSoundEnabled(),
+  listeners: [],
+  onChange(listener) {
+    this.listeners.push(listener)
+  },
+  offChange(listener) {
+    const index = this.listeners.indexOf(listener)
+    if (index !== -1) this.listeners.splice(index, 1)
+  },
+  set(enabled) {
+    this.enabled = enabled
+    try {
+      localStorage.setItem(NOTIFICATION_SOUND_STORAGE_KEY, enabled ? "on" : "off")
+    } catch (_error) {
+      // The preference just won't persist across reloads when storage is unavailable.
+    }
+    this.listeners.forEach(listener => listener(enabled))
+  },
+}
+
+window.addEventListener("storage", event => {
+  if (event.key !== NOTIFICATION_SOUND_STORAGE_KEY) return
+  notificationSoundState.enabled = event.newValue !== "off"
+  notificationSoundState.listeners.forEach(listener => listener(notificationSoundState.enabled))
+})
+
+const NotificationSound = {
+  mounted() {
+    this.render = enabled => {
+      const state = enabled ?? notificationSoundState.enabled
+      this.el.dataset.soundState = state ? "on" : "off"
+      this.el.setAttribute("aria-pressed", String(state))
+      this.el.setAttribute("aria-label", `Звук уведомлений: ${state ? "включён" : "отключён"}`)
+      this.el.title = state ? "Отключить звук уведомлений" : "Включить звук уведомлений"
+
+      const on = this.el.querySelector('[data-notification-sound-icon="on"]')
+      const off = this.el.querySelector('[data-notification-sound-icon="off"]')
+      if (on) on.hidden = !state
+      if (off) off.hidden = state
+    }
+    this.toggle = event => {
+      event.preventDefault()
+      notificationSoundState.set(!notificationSoundState.enabled)
+    }
+
+    notificationSoundState.onChange(this.render)
+    this.el.addEventListener("click", this.toggle)
+    this.render()
+  },
+  updated() {
+    // The button's on/off markup is static in the template (this preference
+    // has no server-side assign backing it), so any LiveView patch touching
+    // this region — e.g. the sidebar re-rendering for an unread-count bump —
+    // morphs it back to the default "on" HTML. Re-apply our actual state.
+    this.render()
+  },
+  destroyed() {
+    this.el.removeEventListener("click", this.toggle)
+    notificationSoundState.offChange(this.render)
+  },
+}
+
 // Per-partition ("channel:<id>") resume cursors: the highest outbox event
 // sequence this browser has already applied. Sent back on every connect/
 // reconnect so the server can replay only what was missed. Advanced live via
@@ -820,6 +905,63 @@ const resolveConnected = hook => {
 const ConnectionState = {
   mounted() {
     resolveConnected(this)
+
+    // tasks/connect_concept.txt item 2/3: an open WebSocket alone is not
+    // proof of readiness. On any of these lifecycle signals, if we currently
+    // *believe* we're live, actively verify with a server round trip instead
+    // of waiting for Phoenix's own ~30s heartbeat timeout to notice.
+    this.livenessState = createLivenessState()
+    this.probeInFlight = false
+    this.lastSuspendTick = Date.now()
+
+    this.verifyLiveness = reason => {
+      if (connectionState.current !== "live") return // reconnect/catch-up already owns this path
+      if (this.probeInFlight) return
+      if (!shouldProbe(this.livenessState, Date.now())) return
+      this.probe(reason)
+    }
+
+    this.probe = reason => {
+      this.probeInFlight = true
+      let settled = false
+
+      const timer = setTimeout(() => {
+        if (settled) return
+        settled = true
+        this.probeInFlight = false
+        console.warn(`[connection-liveness] "${reason}" ping timed out — forcing reconnect`)
+        liveSocket.disconnect(() => liveSocket.connect())
+      }, PING_TIMEOUT_MS)
+
+      this.pushEvent("ping", {}, () => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        this.probeInFlight = false
+      })
+    }
+
+    this.onOnline = () => this.verifyLiveness("online")
+    this.onOffline = () => this.verifyLiveness("offline")
+    this.onVisibilityChange = () => this.verifyLiveness("visibilitychange")
+    this.onFocus = () => this.verifyLiveness("focus")
+    this.onPageShow = () => this.verifyLiveness("pageshow")
+
+    window.addEventListener("online", this.onOnline)
+    window.addEventListener("offline", this.onOffline)
+    document.addEventListener("visibilitychange", this.onVisibilityChange)
+    window.addEventListener("focus", this.onFocus)
+    window.addEventListener("pageshow", this.onPageShow)
+
+    // Device-sleep/tab-suspend heuristic: no native browser event exists for
+    // this, so a recurring timer whose actual gap is much larger than
+    // scheduled implies the tab/OS was suspended in between ticks.
+    this.suspendTimer = setInterval(() => {
+      const now = Date.now()
+      const elapsed = now - this.lastSuspendTick
+      this.lastSuspendTick = now
+      if (suspectedSuspend(SUSPEND_TICK_MS, elapsed)) this.verifyLiveness("resume")
+    }, SUSPEND_TICK_MS)
   },
   reconnected() {
     resolveConnected(this)
@@ -829,6 +971,14 @@ const ConnectionState = {
     // Phoenix's LiveSocket retries automatically, so we're immediately back to
     // attempting a connection rather than sitting idle.
     connectionState.send("connect")
+  },
+  destroyed() {
+    window.removeEventListener("online", this.onOnline)
+    window.removeEventListener("offline", this.onOffline)
+    document.removeEventListener("visibilitychange", this.onVisibilityChange)
+    window.removeEventListener("focus", this.onFocus)
+    window.removeEventListener("pageshow", this.onPageShow)
+    clearInterval(this.suspendTimer)
   },
 }
 
@@ -846,10 +996,25 @@ const ConnectionState = {
 // one person while the tab is unfocused) must not become a burst of beeps.
 // `soundCooldownState` groups by `channel_id` — the same identifier the
 // server already resolves for both channel and direct messages — so the
-// toast/badge still fire for every event (data isn't suppressed, only the
-// sound), while `shouldPlaySound` throttles the sound itself, independently
-// per conversation, per the single config in sound_cooldown.js.
+// system notification still fires for every event (data isn't suppressed,
+// only the sound), while `shouldPlaySound` throttles the sound itself,
+// independently per conversation, per the single config in sound_cooldown.js.
 const soundCooldownState = createCooldownState()
+
+// Forwards a WebSocket-delivered event to the Service Worker so it goes
+// through the exact same showNotification() code path as a Web Push delivery
+// of the same event (see priv/static/sw.js) — the SW dedupes by `event_id`
+// in case both transports end up delivering it. Requires Notification
+// permission (granted only via the PushNotifications hook's opt-in), so a
+// user who never enabled push simply gets no system notification here.
+const notifySystem = event => {
+  if (!("serviceWorker" in navigator) || !("Notification" in window)) return
+  if (Notification.permission !== "granted") return
+
+  navigator.serviceWorker.ready
+    .then(registration => registration.active?.postMessage({type: "orbit-notify", event}))
+    .catch(() => {})
+}
 
 window.addEventListener("phx:notify", ({detail}) => {
   const priority = detail?.priority === "high" ? "high" : "low"
@@ -862,14 +1027,14 @@ window.addEventListener("phx:notify", ({detail}) => {
   })
 
   if (decision === "toast" || decision === "sound") {
-    showToast({
+    notifySystem({
+      event_id: detail?.event_id,
       title: detail?.title,
-      senderName: detail?.sender_name,
-      senderLogin: detail?.sender_login,
-      preview: detail?.preview,
+      body: detail?.body,
+      url: detail?.url,
     })
   }
-  if (decision === "sound" &&
+  if (decision === "sound" && notificationSoundState.enabled &&
       shouldPlaySound(soundCooldownState, detail?.channel_id, priority, Date.now())) {
     playNotificationSound()
   }
@@ -891,6 +1056,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     MessageDeleteWindow,
     MessageEditWindow,
     PushNotifications,
+    NotificationSound,
     ConnectionState,
   },
 })

@@ -15,25 +15,47 @@ defmodule ElixirChat.OutboxPublisher do
         notification_type = conversation_notification_type(event_type)
         recipient_ids = ElixirChat.Chat.conversation_user_ids(message.channel_id)
 
-        Enum.each(recipient_ids, fn user_id ->
-          Phoenix.PubSub.broadcast(
-            ElixirChat.PubSub,
-            ElixirChat.Chat.user_topic(user_id),
-            {notification_type, message}
-          )
-        end)
+        if event_type == :message_created do
+          notification_event =
+            ElixirChat.Notifications.build_channel_event(event.event_id, message)
+
+          Enum.each(recipient_ids, fn user_id ->
+            Phoenix.PubSub.broadcast(
+              ElixirChat.PubSub,
+              ElixirChat.Chat.user_topic(user_id),
+              {notification_type, message, notification_event}
+            )
+          end)
+
+          ElixirChat.Notifications.enqueue(:channel, message, notification_event)
+        else
+          Enum.each(recipient_ids, fn user_id ->
+            Phoenix.PubSub.broadcast(
+              ElixirChat.PubSub,
+              ElixirChat.Chat.user_topic(user_id),
+              {notification_type, message}
+            )
+          end)
+        end
 
         broadcast_event_sequence(recipient_ids, event)
-
-        if event_type == :message_created do
-          ElixirChat.Notifications.enqueue(:channel, message)
-        end
 
         :ok
 
       {event_type, direct, message} ->
-        tuple = {event_type, direct, message}
         recipient_ids = [direct.first_user_id, direct.second_user_id]
+
+        tuple =
+          if event_type == :direct_message_created do
+            notification_event =
+              ElixirChat.Notifications.build_direct_event(event.event_id, message, direct)
+
+            ElixirChat.Notifications.enqueue(:direct, message, direct, notification_event)
+
+            {event_type, direct, message, notification_event}
+          else
+            {event_type, direct, message}
+          end
 
         Phoenix.PubSub.broadcast(
           ElixirChat.PubSub,
@@ -48,10 +70,6 @@ defmodule ElixirChat.OutboxPublisher do
         )
 
         broadcast_event_sequence(recipient_ids, event)
-
-        if event_type == :direct_message_created do
-          ElixirChat.Notifications.enqueue(:direct, message, direct)
-        end
 
         :ok
     end

@@ -613,6 +613,14 @@ defmodule ElixirChatWeb.ChatLive do
     end
   end
 
+  # Liveness probe (tasks/connect_concept.txt item 3): a no-op round trip the
+  # client fires when it suspects the WebSocket is open but not actually
+  # servicing requests (device wake, tab foregrounded, network change, etc.).
+  # The reply itself carries no data — arriving at all, within the client's
+  # own timeout, *is* the signal. See the ConnectionState hook /
+  # connection_liveness.js for the client side of this contract.
+  def handle_event("ping", _params, socket), do: {:reply, %{}, socket}
+
   @impl true
   def handle_info({:message_created, %Message{} = message}, socket) do
     if socket.assigns.channel && message.channel_id == socket.assigns.channel.id do
@@ -622,11 +630,11 @@ defmodule ElixirChatWeb.ChatLive do
     end
   end
 
-  def handle_info({:conversation_message_created, %Message{} = message}, socket) do
+  def handle_info({:conversation_message_created, %Message{} = message, event}, socket) do
     socket =
       socket
       |> refresh_unread_count(message.channel_id)
-      |> maybe_notify_channel_message(message)
+      |> maybe_notify_channel_message(message, event)
 
     {:noreply, socket}
   end
@@ -682,7 +690,7 @@ defmodule ElixirChatWeb.ChatLive do
   end
 
   def handle_info(
-        {:direct_message_created, %DirectConversation{} = direct, %Message{} = message},
+        {:direct_message_created, %DirectConversation{} = direct, %Message{} = message, event},
         socket
       ) do
     active? =
@@ -693,7 +701,7 @@ defmodule ElixirChatWeb.ChatLive do
       socket
       |> upsert_direct(direct, true)
       |> refresh_unread_count(message.channel_id)
-      |> maybe_notify_direct_message(direct, message, active?)
+      |> maybe_notify_direct_message(direct, message, event, active?)
 
     if active? do
       {:noreply, MessageWindow.receive_message(socket, message)}
@@ -795,35 +803,41 @@ defmodule ElixirChatWeb.ChatLive do
   # but a channel message that mentions this recipient is just as urgent as
   # a DM ("high"), and no two recipients of the same message necessarily
   # agree on which it is.
-  defp maybe_notify_channel_message(socket, message) do
+  defp maybe_notify_channel_message(socket, message, event) do
     user = socket.assigns.current_scope.user
 
     if notifiable?(socket, user, message) do
-      channel = Enum.find(socket.assigns.channels, &(&1.id == message.channel_id))
-
       priority = if Notifications.mentioned?(message.id, user.id), do: "high", else: "low"
 
-      push_notify(socket, message, %{
+      push_notify(socket, %{
+        event_id: event.event_id,
         type: "channel",
         priority: priority,
         active:
           not is_nil(socket.assigns.channel) && socket.assigns.channel.id == message.channel_id,
-        title: (channel && "##{channel.name}") || "Канал"
+        title: event.title,
+        body: event.body,
+        url: event.url,
+        channel_id: message.channel_id
       })
     else
       socket
     end
   end
 
-  defp maybe_notify_direct_message(socket, _direct, message, active?) do
+  defp maybe_notify_direct_message(socket, _direct, message, event, active?) do
     user = socket.assigns.current_scope.user
 
     if notifiable?(socket, user, message) do
-      push_notify(socket, message, %{
+      push_notify(socket, %{
+        event_id: event.event_id,
         type: "direct",
         priority: "high",
         active: active?,
-        title: nil
+        title: event.title,
+        body: event.body,
+        url: event.url,
+        channel_id: message.channel_id
       })
     else
       socket
@@ -835,29 +849,21 @@ defmodule ElixirChatWeb.ChatLive do
       not Notifications.muted?(user.id, message.channel_id)
   end
 
-  defp push_notify(socket, message, attrs) do
+  defp push_notify(socket, attrs) do
     push_event(socket, "notify", %{
+      event_id: attrs.event_id,
       type: attrs.type,
       priority: attrs.priority,
       active: attrs.active,
       title: attrs.title,
-      sender_name: message.author_name,
-      sender_login: message.user && message.user.login,
-      preview: message_preview(message.body),
+      body: attrs.body,
+      url: attrs.url,
       # Conversation grouping key for the client's sound-cooldown gate
       # (assets/js/sound_cooldown.js) — a burst of several notifies for the
       # same channel/direct conversation should collapse to one sound, not
       # silence unrelated conversations too.
-      channel_id: message.channel_id
+      channel_id: attrs.channel_id
     })
-  end
-
-  defp message_preview(body) do
-    body
-    |> to_string()
-    |> String.replace(~r/\s+/, " ")
-    |> String.trim()
-    |> String.slice(0, 140)
   end
 
   defp load_public_channel(socket, channel),
