@@ -4,7 +4,7 @@ defmodule ElixirChat.NotificationsTest do
   alias ElixirChat.Accounts.{Scope, User}
   alias ElixirChat.Chat
   alias ElixirChat.Notifications
-  alias ElixirChat.Notifications.{NotificationPreference, PushDelivery}
+  alias ElixirChat.Notifications.{Notification, NotificationPreference, PushDelivery}
   alias ElixirChat.Repo
 
   setup do
@@ -101,10 +101,16 @@ defmodule ElixirChat.NotificationsTest do
     channel = channel_fixture(%{name: "ownership-transfer"})
 
     {:ok, message} =
-      Chat.create_message(Scope.for_user(next_user), channel, %{body: "private preview"})
+      Chat.create_message(Scope.for_user(next_user), channel, %{
+        body: "@#{user.login} private preview"
+      })
 
-    enable_push([])
+    # A retryable failure, so the delivery row survives the (now-synchronous)
+    # delivery attempt made by `process/2` itself — otherwise there would be
+    # nothing left in `push_deliveries` for the resubscribe below to clean up.
+    enable_push([{:error, {:http_error, 503, "unavailable"}}])
     assert :ok = Notifications.process(:channel, message)
+    assert_receive {:web_push, _, _}
     assert Repo.aggregate(PushDelivery, :count) == 1
 
     assert {:ok, transferred} =
@@ -166,6 +172,20 @@ defmodule ElixirChat.NotificationsTest do
            ) == 1
   end
 
+  test "an ordinary channel message queues no push delivery for non-mentioned recipients", %{
+    scope: scope
+  } do
+    recipient = user_fixture()
+    channel = channel_fixture(%{name: "no-mention-push"})
+    subscribe!(recipient, "no-mention")
+
+    {:ok, message} = Chat.create_message(scope, channel, %{body: "обычное сообщение всем"})
+
+    enable_push([])
+    assert :ok = Notifications.process(:channel, message)
+    assert Repo.aggregate(PushDelivery, :count) == 0
+  end
+
   test "channel delivery sends JSON only to unmuted recipients and limits the preview", %{
     scope: scope
   } do
@@ -175,12 +195,15 @@ defmodule ElixirChat.NotificationsTest do
     subscribe!(author, "author")
     subscribe!(recipient, "recipient")
 
-    {:ok, message} = Chat.create_message(scope, channel, %{body: String.duplicate("🙂", 300)})
+    {:ok, message} =
+      Chat.create_message(scope, channel, %{
+        body: "@#{recipient.login} " <> String.duplicate("🙂", 300)
+      })
+
     assert message.author_name == author.display_name
 
     enable_push([])
     assert :ok = Notifications.process(:channel, message)
-    assert {:ok, 1} = ElixirChat.NotificationSender.dispatch_now()
 
     assert_receive {:web_push, subscription_json, payload_json}
 
@@ -201,7 +224,6 @@ defmodule ElixirChat.NotificationsTest do
 
     Notifications.set_muted(recipient, channel.id, true)
     assert :ok = Notifications.process(:channel, message)
-    assert {:ok, 0} = ElixirChat.NotificationSender.dispatch_now()
     refute_receive {:web_push, _, _}, 20
   end
 
@@ -218,7 +240,6 @@ defmodule ElixirChat.NotificationsTest do
 
     enable_push([])
     assert :ok = Notifications.process(:direct, message, direct)
-    assert {:ok, 1} = ElixirChat.NotificationSender.dispatch_now()
 
     assert_receive {:web_push, subscription_json, payload_json}
     assert Jason.decode!(subscription_json)["endpoint"] == "https://fcm.googleapis.com/other"
@@ -234,32 +255,26 @@ defmodule ElixirChat.NotificationsTest do
     recipient = user_fixture()
     channel = channel_fixture(%{name: "expired-push"})
     subscribe!(recipient, "expired")
-    {:ok, message} = Chat.create_message(scope, channel, %{body: "привет"})
+    {:ok, message} = Chat.create_message(scope, channel, %{body: "@#{recipient.login} привет"})
 
     enable_push([{:error, :expired}])
     assert :ok = Notifications.process(:channel, message)
-    assert {:ok, 1} = ElixirChat.NotificationSender.dispatch_now()
     assert_receive {:web_push, _, _}
     assert Notifications.list_subscriptions(recipient.id) == []
   end
 
-  test "transient failures are persisted for retry without restarting the sender", %{scope: scope} do
+  test "a transient failure leaves the delivery row in place for Oban to retry", %{scope: scope} do
     recipient = user_fixture()
     channel = channel_fixture(%{name: "resilient-push"})
     subscribe!(recipient, "resilient")
-    {:ok, message} = Chat.create_message(scope, channel, %{body: "привет"})
+    {:ok, message} = Chat.create_message(scope, channel, %{body: "@#{recipient.login} привет"})
 
     enable_push([{:error, {:http_error, 503, "unavailable"}}])
 
-    sender = Process.whereis(ElixirChat.NotificationSender)
     assert :ok = Notifications.process(:channel, message)
-    assert {:ok, 1} = ElixirChat.NotificationSender.dispatch_now()
     assert_receive {:web_push, _, _}
 
-    assert %PushDelivery{attempt_count: 1, last_error: last_error} = Repo.one(PushDelivery)
-    assert last_error =~ "http_error"
-    assert Process.alive?(sender)
-    assert Process.whereis(ElixirChat.NotificationSender) == sender
+    assert %PushDelivery{} = Repo.one(PushDelivery)
   end
 
   test "exceptions in one delivery do not block later jobs", %{scope: scope} do
@@ -268,15 +283,163 @@ defmodule ElixirChat.NotificationsTest do
     channel = channel_fixture(%{name: "concurrent-push"})
     subscribe!(first_recipient, "first")
     subscribe!(second_recipient, "second")
-    {:ok, message} = Chat.create_message(scope, channel, %{body: "привет"})
+
+    {:ok, message} =
+      Chat.create_message(scope, channel, %{
+        body: "@#{first_recipient.login} @#{second_recipient.login} привет"
+      })
 
     enable_push([{:raise, "encryption failed"}, {:ok, :sent}])
     assert :ok = Notifications.process(:channel, message)
-    assert {:ok, 2} = ElixirChat.NotificationSender.dispatch_now()
 
     assert_receive {:web_push, _, _}
     assert_receive {:web_push, _, _}
     assert Repo.aggregate(PushDelivery, :count) == 1
+  end
+
+  test "mentioned?/2 reports whether a recipient was actually @mentioned by a message", %{
+    scope: scope
+  } do
+    channel = channel_fixture(%{name: "mentioned-check"})
+    mentioned = user_fixture()
+    bystander = user_fixture()
+
+    {:ok, message} =
+      Chat.create_message(scope, channel, %{body: "@#{mentioned.login} привет"})
+
+    assert Notifications.mentioned?(message.id, mentioned.id)
+    refute Notifications.mentioned?(message.id, bystander.id)
+  end
+
+  test "read_at/1 derives read status from the recipient's existing read cursor", %{
+    scope: scope
+  } do
+    other = user_fixture()
+    {:ok, direct} = Chat.get_or_create_direct_conversation(scope, other.id)
+    {:ok, message} = Chat.create_message(scope, direct.channel, %{body: "привет"})
+
+    assert %Notification{type: "direct_message", recipient_id: recipient_id} =
+             notification =
+             Repo.get_by!(Notification, message_id: message.id)
+
+    assert recipient_id == other.id
+    assert Notifications.read_at(notification) == nil
+
+    assert {:ok, 0} =
+             Chat.mark_conversation_read(Scope.for_user(other), direct.channel.id, message.id)
+
+    assert %DateTime{} = Notifications.read_at(notification)
+  end
+
+  test "delete_stale_deliveries_before/2 deletes push_deliveries older than the cutoff regardless of outcome",
+       %{scope: scope} do
+    recipient = user_fixture()
+    channel = channel_fixture(%{name: "stale-push-cleanup"})
+    subscribe!(recipient, "stale-cleanup")
+    {:ok, message} = Chat.create_message(scope, channel, %{body: "@#{recipient.login} привет"})
+
+    enable_push([{:error, {:http_error, 503, "unavailable"}}])
+    assert :ok = Notifications.process(:channel, message)
+    assert_receive {:web_push, _, _}
+
+    assert %PushDelivery{} = delivery = Repo.one(PushDelivery)
+    cutoff = DateTime.utc_now(:second)
+
+    delivery
+    |> Ecto.Changeset.change(inserted_at: DateTime.add(cutoff, -3600))
+    |> Repo.update!()
+
+    assert Notifications.delete_stale_deliveries_before(cutoff) == 1
+    refute Repo.get(PushDelivery, delivery.id)
+  end
+
+  test "delete_stale_deliveries_before/2 leaves recent deliveries alone", %{scope: scope} do
+    recipient = user_fixture()
+    channel = channel_fixture(%{name: "recent-push-cleanup"})
+    subscribe!(recipient, "recent-cleanup")
+    {:ok, message} = Chat.create_message(scope, channel, %{body: "@#{recipient.login} привет"})
+
+    enable_push([{:error, {:http_error, 503, "unavailable"}}])
+    assert :ok = Notifications.process(:channel, message)
+    assert_receive {:web_push, _, _}
+
+    cutoff = DateTime.add(DateTime.utc_now(:second), -3600)
+    assert Notifications.delete_stale_deliveries_before(cutoff) == 0
+    assert Repo.aggregate(PushDelivery, :count) == 1
+  end
+
+  test "delete_read_notifications_before/2 deletes only read notifications older than the cutoff",
+       %{scope: scope} do
+    other = user_fixture()
+    {:ok, direct} = Chat.get_or_create_direct_conversation(scope, other.id)
+    {:ok, message} = Chat.create_message(scope, direct.channel, %{body: "привет"})
+
+    notification = Repo.get_by!(Notification, message_id: message.id)
+
+    assert {:ok, 0} =
+             Chat.mark_conversation_read(Scope.for_user(other), direct.channel.id, message.id)
+
+    cutoff = DateTime.utc_now(:second)
+
+    notification
+    |> Ecto.Changeset.change(inserted_at: DateTime.add(cutoff, -3600))
+    |> Repo.update!()
+
+    assert Notifications.delete_read_notifications_before(cutoff) == 1
+    refute Repo.get(Notification, notification.id)
+  end
+
+  test "delete_read_notifications_before/2 never deletes unread notifications, no matter their age",
+       %{scope: scope} do
+    other = user_fixture()
+    {:ok, direct} = Chat.get_or_create_direct_conversation(scope, other.id)
+    {:ok, message} = Chat.create_message(scope, direct.channel, %{body: "привет"})
+
+    notification = Repo.get_by!(Notification, message_id: message.id)
+    cutoff = DateTime.utc_now(:second)
+
+    notification
+    |> Ecto.Changeset.change(inserted_at: DateTime.add(cutoff, -3600))
+    |> Repo.update!()
+
+    assert Notifications.delete_read_notifications_before(cutoff) == 0
+    assert Repo.get(Notification, notification.id)
+  end
+
+  test "delete_read_notifications_before/2 batches so a large backlog is deleted in bounded chunks",
+       %{scope: scope} do
+    other = user_fixture()
+    {:ok, direct} = Chat.get_or_create_direct_conversation(scope, other.id)
+
+    messages =
+      for i <- 1..25 do
+        {:ok, message} = Chat.create_message(scope, direct.channel, %{body: "привет #{i}"})
+        message
+      end
+
+    assert {:ok, 0} =
+             Chat.mark_conversation_read(
+               Scope.for_user(other),
+               direct.channel.id,
+               List.last(messages).id
+             )
+
+    cutoff = DateTime.utc_now(:second)
+
+    notifications =
+      Enum.map(messages, fn message ->
+        Notification
+        |> Repo.get_by!(message_id: message.id)
+        |> Ecto.Changeset.change(inserted_at: DateTime.add(cutoff, -3600))
+        |> Repo.update!()
+      end)
+
+    assert Notifications.delete_read_notifications_before(cutoff, 10) == 10
+    assert Notifications.delete_read_notifications_before(cutoff, 10) == 10
+    assert Notifications.delete_read_notifications_before(cutoff, 10) == 5
+    assert Notifications.delete_read_notifications_before(cutoff, 10) == 0
+
+    Enum.each(notifications, fn notification -> refute Repo.get(Notification, notification.id) end)
   end
 
   defp subscribe!(user, suffix) do

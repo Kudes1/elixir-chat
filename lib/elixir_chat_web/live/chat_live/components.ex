@@ -876,15 +876,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
     """
   end
 
-  def mention_fragments(body) do
-    ~r/(@[a-z0-9._-]+)/
-    |> Regex.split(body, include_captures: true, trim: true)
-    |> Enum.map(fn fragment ->
-      if Regex.match?(~r/^@[a-z0-9._-]+$/, fragment),
-        do: {:mention, fragment},
-        else: {:text, fragment}
-    end)
-  end
+  def mention_fragments(body), do: ElixirChat.Chat.Mentions.fragments(body)
 
   def open_sidebar(js \\ %JS{}) do
     js

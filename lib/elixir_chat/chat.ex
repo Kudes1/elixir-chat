@@ -12,11 +12,14 @@ defmodule ElixirChat.Chat do
     ChannelMembership,
     ConversationRead,
     DirectConversation,
+    Mentions,
     Message,
     Outbox
   }
 
+  alias ElixirChat.Notifications.Notification
   alias ElixirChat.Repo
+  alias ElixirChat.Workers.PublishOutboxEvent
 
   @pubsub ElixirChat.PubSub
   @message_page_size 50
@@ -614,10 +617,12 @@ defmodule ElixirChat.Chat do
       |> Multi.insert(:outbox_event, fn %{message: deleted} ->
         Outbox.event_changeset(message_event_type(message.channel, :deleted), deleted, direct)
       end)
+      |> Multi.run(:publish_outbox_event_job, fn _repo, %{outbox_event: event} ->
+        Oban.insert(PublishOutboxEvent.new(%{event_id: event.id}))
+      end)
       |> Repo.transaction()
       |> case do
         {:ok, %{message: deleted}} ->
-          ElixirChat.OutboxDispatcher.wake_up()
           {:ok, deleted}
 
         {:error, _operation, reason, _changes} ->
@@ -662,10 +667,12 @@ defmodule ElixirChat.Chat do
         updated = %{updated | channel: message.channel, user: message.user}
         Outbox.event_changeset(message_event_type(message.channel, :updated), updated, direct)
       end)
+      |> Multi.run(:publish_outbox_event_job, fn _repo, %{outbox_event: event} ->
+        Oban.insert(PublishOutboxEvent.new(%{event_id: event.id}))
+      end)
       |> Repo.transaction()
       |> case do
         {:ok, %{message: updated}} ->
-          ElixirChat.OutboxDispatcher.wake_up()
           {:ok, %{updated | channel: message.channel, user: message.user}}
 
         {:error, _operation, reason, _changes} ->
@@ -791,6 +798,13 @@ defmodule ElixirChat.Chat do
       end
     end)
     |> maybe_update_direct(direct_info)
+    |> Multi.run(:notifications, fn repo, changes ->
+      {message, created?} = changes.message_result
+
+      if created?,
+        do: insert_notifications(repo, user, channel, message, direct_info),
+        else: {:ok, []}
+    end)
     |> Multi.run(:outbox_event, fn repo, changes ->
       {message, created?} = changes.message_result
 
@@ -802,10 +816,15 @@ defmodule ElixirChat.Chat do
         {:ok, nil}
       end
     end)
+    |> Multi.run(:publish_outbox_event_job, fn _repo, changes ->
+      case changes.outbox_event do
+        nil -> {:ok, nil}
+        event -> Oban.insert(PublishOutboxEvent.new(%{event_id: event.id}))
+      end
+    end)
     |> Repo.transaction()
     |> case do
       {:ok, %{message_result: {message, true}}} ->
-        ElixirChat.OutboxDispatcher.wake_up()
         {:ok, message}
 
       {:ok, %{message_result: {message, false}}} ->
@@ -827,6 +846,68 @@ defmodule ElixirChat.Chat do
         do: repo.update(DirectConversation.activity_changeset(direct, now)),
         else: {:ok, direct}
     end)
+  end
+
+  # Durable Notification rows are deliberately narrow: a plain channel message
+  # to non-mentioned members never gets one (that is the whole point of this
+  # table existing separately from "every message, every recipient" —
+  # see push narrowing in ElixirChat.Notifications.process/2). Mentioning
+  # yourself, or a login that is not an actual current recipient, resolves to
+  # nothing rather than erroring — the sender just typed `@word`.
+  defp insert_notifications(repo, user, channel, message, nil) do
+    case Mentions.logins(message.body) do
+      [] ->
+        {:ok, []}
+
+      logins ->
+        recipient_ids = conversation_user_ids(channel.id) -- [user.id]
+
+        mentioned_ids =
+          case recipient_ids do
+            [] ->
+              []
+
+            ids ->
+              repo.all(
+                from other in User,
+                  where: other.login in ^logins and other.id in ^ids,
+                  select: other.id
+              )
+          end
+
+        insert_notification_rows(repo, mentioned_ids, "mention", message, channel)
+    end
+  end
+
+  defp insert_notifications(repo, user, channel, message, {direct, _now}) do
+    recipient_id = DirectConversation.other_user(direct, user.id).id
+    insert_notification_rows(repo, [recipient_id], "direct_message", message, channel)
+  end
+
+  defp insert_notification_rows(_repo, [], _type, _message, _channel), do: {:ok, []}
+
+  defp insert_notification_rows(repo, recipient_ids, type, message, channel) do
+    now = DateTime.utc_now(:second)
+
+    rows =
+      Enum.map(recipient_ids, fn recipient_id ->
+        %{
+          type: type,
+          recipient_id: recipient_id,
+          message_id: message.id,
+          channel_id: channel.id,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    {count, _} =
+      repo.insert_all(Notification, rows,
+        on_conflict: :nothing,
+        conflict_target: [:message_id, :recipient_id, :type]
+      )
+
+    {:ok, count}
   end
 
   defp recover_idempotent_insert(user, channel, client_message_id, body, changeset) do

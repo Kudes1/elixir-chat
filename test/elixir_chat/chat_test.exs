@@ -13,6 +13,7 @@ defmodule ElixirChat.ChatTest do
     OutboxEvent
   }
 
+  alias ElixirChat.Notifications.Notification
   alias ElixirChat.Repo
 
   setup do
@@ -115,6 +116,89 @@ defmodule ElixirChat.ChatTest do
              })
 
     refute first.id == second.id
+  end
+
+  test "an ordinary channel message creates no Notification, even with hundreds of implicit members",
+       %{scope: scope} do
+    channel = channel_fixture(%{name: "large-public-channel"})
+    for number <- 1..200, do: user_fixture(%{login: "member#{number}"})
+
+    assert length(Chat.conversation_user_ids(channel.id)) >= 200
+
+    {:ok, _message} = Chat.create_message(scope, channel, %{body: "Обычное сообщение всем"})
+
+    assert Repo.aggregate(Message, :count) == 1
+    assert Repo.aggregate(Notification, :count) == 0
+  end
+
+  test "a channel message notifies only the members it actually @mentions", %{
+    scope: scope,
+    user: user
+  } do
+    channel = channel_fixture(%{name: "mention-channel"})
+    mentioned = user_fixture(%{login: "alice"})
+    also_mentioned = user_fixture(%{login: "bob"})
+    _not_mentioned = user_fixture(%{login: "carol"})
+
+    {:ok, message} =
+      Chat.create_message(scope, channel, %{
+        body: "@alice @bob @nobody-such-login и @#{user.login}, гляньте"
+      })
+
+    notifications = Repo.all(from n in Notification, where: n.message_id == ^message.id)
+
+    assert length(notifications) == 2
+    assert Enum.all?(notifications, &(&1.type == "mention"))
+    assert Enum.all?(notifications, &(&1.channel_id == channel.id))
+
+    assert Enum.map(notifications, & &1.recipient_id) |> Enum.sort() ==
+             Enum.sort([mentioned.id, also_mentioned.id])
+  end
+
+  test "mentioning yourself does not create a self-notification", %{scope: scope, user: user} do
+    channel = channel_fixture(%{name: "self-mention-channel"})
+
+    {:ok, message} =
+      Chat.create_message(scope, channel, %{body: "@#{user.login} напоминание себе"})
+
+    refute Repo.exists?(from n in Notification, where: n.message_id == ^message.id)
+  end
+
+  test "a direct message always notifies the other participant, mention or not", %{
+    scope: scope,
+    user: user
+  } do
+    other = user_fixture(%{login: "direct.recipient"})
+    {:ok, direct} = Chat.get_or_create_direct_conversation(scope, other.id)
+
+    {:ok, message} = Chat.create_message(scope, direct.channel, %{body: "привет"})
+
+    assert [notification] = Repo.all(from n in Notification, where: n.message_id == ^message.id)
+    assert notification.type == "direct_message"
+    assert notification.recipient_id == other.id
+    assert notification.channel_id == direct.channel.id
+
+    refute Repo.exists?(
+             from n in Notification,
+               where: n.message_id == ^message.id and n.recipient_id == ^user.id
+           )
+  end
+
+  test "re-sending the same idempotent message does not duplicate its notification", %{
+    scope: scope
+  } do
+    channel = channel_fixture(%{name: "idempotent-mention-channel"})
+    mentioned = user_fixture(%{login: "dana"})
+    client_message_id = Ecto.UUID.generate()
+
+    attrs = %{body: "@dana привет", client_message_id: client_message_id}
+    {:ok, first} = Chat.create_message(scope, channel, attrs)
+    {:ok, repeated} = Chat.create_message(scope, channel, attrs)
+
+    assert first.id == repeated.id
+
+    assert [notification] = Repo.all(from n in Notification, where: n.message_id == ^first.id)
+    assert notification.recipient_id == mentioned.id
   end
 
   test "cursor pagination has no gaps or duplicates", %{scope: scope} do

@@ -73,7 +73,8 @@ defmodule ElixirChat.MixProject do
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
       {:argon2_elixir, "~> 4.1"},
-      {:web_push_elixir, "~> 0.8.0"}
+      {:web_push_elixir, "~> 0.8.0"},
+      {:oban, "~> 2.19"}
     ]
   end
 

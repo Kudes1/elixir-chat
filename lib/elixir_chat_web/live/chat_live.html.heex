@@ -7,6 +7,15 @@
     data-sidebar-min-width="220"
     data-sidebar-max-width="480"
   >
+    <div
+      id="connection-state"
+      phx-hook="ConnectionState"
+      data-connection-state={to_string(@connection_state)}
+      data-catching-up={to_string(@catching_up?)}
+      data-missed-event-count={@missed_event_count}
+      hidden
+    >
+    </div>
     <.sidebar
       channels={@channels}
       channel={@channel}

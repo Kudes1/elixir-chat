@@ -9,9 +9,6 @@ defmodule ElixirChat.Notifications.PushDelivery do
 
   schema "push_deliveries" do
     field :payload, :map
-    field :attempt_count, :integer, default: 0
-    field :available_at, :utc_datetime
-    field :last_error, :string
 
     belongs_to :subscription, PushSubscription
     belongs_to :recipient, User

@@ -11,12 +11,27 @@ config :elixir_chat, ElixirChat.RepoDiagnostics,
   slow_query_ms: parse_positive_integer.("DB_SLOW_QUERY_MS", "500"),
   queue_warn_ms: parse_positive_integer.("DB_QUEUE_WARN_MS", "100")
 
-outbox_default_interval = if config_env() == :test, do: "600000", else: "1000"
+config :elixir_chat, ElixirChat.Retention,
+  outbox_events_days: parse_positive_integer.("RETENTION_OUTBOX_EVENTS_DAYS", "7"),
+  push_deliveries_days: parse_positive_integer.("RETENTION_PUSH_DELIVERIES_DAYS", "30"),
+  notifications_read_days: parse_positive_integer.("RETENTION_NOTIFICATIONS_READ_DAYS", "90")
 
-config :elixir_chat, ElixirChat.OutboxDispatcher,
-  interval: parse_positive_integer.("OUTBOX_POLL_INTERVAL_MS", outbox_default_interval),
-  batch_size: parse_positive_integer.("OUTBOX_BATCH_SIZE", "50"),
-  retention: parse_positive_integer.("OUTBOX_RETENTION_DAYS", "7") * :timer.hours(24)
+config :elixir_chat, Oban,
+  queues: [
+    outbox: parse_positive_integer.("OBAN_OUTBOX_QUEUE_CONCURRENCY", "10"),
+    push: parse_positive_integer.("OBAN_PUSH_QUEUE_CONCURRENCY", "8"),
+    cleanup: parse_positive_integer.("OBAN_CLEANUP_QUEUE_CONCURRENCY", "1")
+  ],
+  plugins: [
+    {Oban.Plugins.Pruner,
+     max_age: parse_positive_integer.("OBAN_JOB_RETENTION_DAYS", "7") * 24 * 60 * 60},
+    {Oban.Plugins.Cron,
+     crontab: [
+       {"0 3 * * *", ElixirChat.Workers.PruneOutboxEvents},
+       {"0 3 * * *", ElixirChat.Workers.PrunePushDeliveries},
+       {"0 3 * * *", ElixirChat.Workers.PruneNotifications}
+     ]}
+  ]
 
 vapid_public_key = System.get_env("VAPID_PUBLIC_KEY", "")
 vapid_private_key = System.get_env("VAPID_PRIVATE_KEY", "")

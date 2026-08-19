@@ -1,17 +1,90 @@
 defmodule ElixirChat.Chat.Outbox do
   @moduledoc false
 
+  import Ecto.Query
+
   alias ElixirChat.Accounts.User
   alias ElixirChat.Chat.{Channel, DirectConversation, Message, OutboxEvent}
+  alias ElixirChat.Repo
+
+  @default_replay_limit 500
+
+  @doc """
+  Lists events for a single partition strictly after `since_id`, oldest first.
+
+  Used to replay the events a client missed for one channel/direct conversation.
+  """
+  def list_since(partition_key, since_id, limit \\ @default_replay_limit) do
+    OutboxEvent
+    |> where([e], e.partition_key == ^partition_key and e.id > ^since_id)
+    |> order_by([e], asc: e.id)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  @doc """
+  Lists events across several partitions, each resumed from its own cursor.
+
+  `cursors` is a map of `partition_key => since_id` (events with `id > since_id` for
+  that partition are returned). Events are returned oldest-first across all
+  partitions combined, capped at `:limit` (default #{@default_replay_limit}) so a
+  large backlog is drained in batches rather than in one unbounded query — callers
+  needing more than `limit` events should re-invoke with cursors advanced to the
+  highest `id` seen per partition in the previous batch.
+  """
+  def list_events_since(cursors, opts \\ [])
+
+  def list_events_since(cursors, _opts) when map_size(cursors) == 0, do: []
+
+  def list_events_since(cursors, opts) do
+    limit = Keyword.get(opts, :limit, @default_replay_limit)
+
+    condition =
+      Enum.reduce(cursors, dynamic(false), fn {partition_key, since_id}, acc ->
+        dynamic([e], ^acc or (e.partition_key == ^partition_key and e.id > ^since_id))
+      end)
+
+    OutboxEvent
+    |> where(^condition)
+    |> order_by([e], asc: e.id)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  @doc """
+  Deletes one batch (default #{@default_replay_limit}) of already-published
+  events with `published_at` older than `cutoff`. Never touches unpublished
+  events regardless of age — those are still being retried by
+  `ElixirChat.Workers.PublishOutboxEvent` (effectively forever) and are not
+  eligible for cleanup just because they're old.
+
+  Returns the number of rows deleted, so a caller (an Oban cleanup worker)
+  can loop via `ElixirChat.Workers.BatchDelete.run/1` until a batch comes
+  back empty instead of deleting an unbounded backlog in one statement.
+  """
+  def delete_published_before(cutoff, batch_size \\ @default_replay_limit) do
+    {count, _} =
+      Repo.delete_all(
+        from e in OutboxEvent,
+          where:
+            e.id in subquery(
+              from e2 in OutboxEvent,
+                where: not is_nil(e2.published_at) and e2.published_at < ^cutoff,
+                select: e2.id,
+                limit: ^batch_size
+            )
+      )
+
+    count
+  end
+
+  def partition_key(channel_id), do: "channel:#{channel_id}"
 
   def event_changeset(event_type, %Message{} = message, direct \\ nil) do
-    now = DateTime.utc_now()
-
     OutboxEvent.changeset(%OutboxEvent{}, %{
       event_id: Ecto.UUID.generate(),
       event_type: Atom.to_string(event_type),
-      partition_key: "channel:#{message.channel_id}",
-      available_at: now,
+      partition_key: partition_key(message.channel_id),
       payload: payload(event_type, message, direct)
     })
   end

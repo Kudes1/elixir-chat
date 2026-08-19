@@ -5,16 +5,18 @@ defmodule ElixirChat.Notifications do
 
   require Logger
 
-  alias ElixirChat.Chat
-  alias ElixirChat.Chat.{DirectConversation, Message}
+  alias ElixirChat.Chat.{ConversationRead, DirectConversation, Message}
 
   alias ElixirChat.Notifications.{
     NotificationPreference,
     EndpointPolicy,
+    Notification,
     PushDelivery,
     PushSubscription,
     WebPushAdapter
   }
+
+  alias ElixirChat.Workers.DeliverPushNotification
 
   alias ElixirChat.Repo
 
@@ -132,28 +134,51 @@ defmodule ElixirChat.Notifications do
     end
   end
 
-  @doc "Asynchronously enqueues push delivery for a freshly created message."
+  @doc """
+  Whether `notification` has been read, and since when — derived from the
+  recipient's existing read cursor for that conversation
+  (`ElixirChat.Chat.ConversationRead`) rather than a second, independently
+  written column on `Notification` itself. The cursor is already the source
+  of truth for "read" (`ElixirChat.Chat.upsert_read_cursor/5`); a duplicate
+  `read_at` write path here would only invite the two to drift apart.
+
+  Returns `nil` when unread. There is no notification-center UI consuming
+  this yet — `seen_at` is deferred entirely until one exists — but "is a
+  mention/DM notification read" is already a well-defined question via the
+  existing read cursor, so it is answered here now rather than invented
+  ad hoc once a consumer shows up.
+  """
+  def read_at(%Notification{recipient_id: recipient_id, channel_id: channel_id} = notification) do
+    Repo.one(
+      from read in ConversationRead,
+        where:
+          read.user_id == ^recipient_id and read.channel_id == ^channel_id and
+            not is_nil(read.last_read_message_id) and
+            read.last_read_message_id >= ^notification.message_id,
+        select: read.last_read_at
+    )
+  end
+
+  @doc "Enqueues durable push delivery jobs for a freshly created message."
   def enqueue(:channel, %Message{} = message) do
-    if enabled?() do
-      :ok = process(:channel, message)
-      ElixirChat.NotificationSender.wake_up()
-    end
+    if enabled?(), do: :ok = process(:channel, message)
 
     :ok
   end
 
   def enqueue(:direct, %Message{} = message, %DirectConversation{} = direct) do
-    if enabled?() do
-      :ok = process(:direct, message, direct)
-      ElixirChat.NotificationSender.wake_up()
-    end
+    if enabled?(), do: :ok = process(:direct, message, direct)
 
     :ok
   end
 
+  # Narrowed to durable Notification recipients (currently: @mention only —
+  # see ElixirChat.Chat.persist_message_transaction/4) rather than every
+  # conversation member, so an ordinary message to a 200-person channel does
+  # not queue 199 push deliveries.
   @doc false
   def process(:channel, %Message{} = message) do
-    recipient_ids = Chat.conversation_user_ids(message.channel_id) -- [message.user_id]
+    recipient_ids = mentioned_recipient_ids(message.id)
     Enum.each(recipient_ids, &queue_channel_push(&1, message))
     :ok
   end
@@ -162,6 +187,24 @@ defmodule ElixirChat.Notifications do
     other_id = DirectConversation.other_user(direct, message.user_id).id
     queue_direct_push(other_id, message, direct)
     :ok
+  end
+
+  defp mentioned_recipient_ids(message_id) do
+    Repo.all(
+      from notification in Notification,
+        where: notification.message_id == ^message_id and notification.type == "mention",
+        select: notification.recipient_id
+    )
+  end
+
+  @doc "Whether `recipient_id` was `@mention`-ed by `message_id`, for NotificationPolicy priority (see ChatLive.maybe_notify_channel_message/2)."
+  def mentioned?(message_id, recipient_id) do
+    Repo.exists?(
+      from notification in Notification,
+        where:
+          notification.message_id == ^message_id and notification.recipient_id == ^recipient_id and
+            notification.type == "mention"
+    )
   end
 
   defp queue_channel_push(recipient_id, %Message{} = message) do
@@ -242,33 +285,108 @@ defmodule ElixirChat.Notifications do
             recipient_id: recipient_id,
             message_id: message.id,
             payload: payload,
-            attempt_count: 0,
-            available_at: now,
             inserted_at: now,
             updated_at: now
           }
         end)
 
-      Repo.insert_all(PushDelivery, rows,
-        on_conflict: :nothing,
-        conflict_target: [:subscription_id, :message_id]
-      )
+      insert_deliveries_with_jobs(rows)
     end
 
     :ok
   end
 
-  @doc false
-  def due_delivery_ids(limit) when is_integer(limit) and limit > 0 do
-    now = DateTime.utc_now(:second)
+  # Inserting the delivery row and its Oban delivery job in the same
+  # transaction is what makes the job durable: if the transaction never
+  # commits, neither exists, and if it does, the job is guaranteed to exist
+  # alongside the row it delivers — no separate "wake up the poller" signal
+  # to lose. `on_conflict: :nothing` + `returning: true` means Postgres only
+  # returns rows actually inserted, so an idempotent replay (the same message
+  # queued twice) never queues a duplicate job for a delivery that already
+  # has one.
+  defp insert_deliveries_with_jobs([]), do: :ok
 
-    Repo.all(
-      from delivery in PushDelivery,
-        where: delivery.available_at <= ^now,
-        order_by: [asc: delivery.id],
-        limit: ^limit,
-        select: delivery.id
-    )
+  defp insert_deliveries_with_jobs(rows) do
+    Repo.transaction(fn ->
+      {_count, inserted} =
+        Repo.insert_all(PushDelivery, rows,
+          on_conflict: :nothing,
+          conflict_target: [:subscription_id, :message_id],
+          returning: [:id]
+        )
+
+      inserted
+      |> Enum.map(&DeliverPushNotification.new(%{delivery_id: &1.id}))
+      |> Oban.insert_all()
+    end)
+
+    :ok
+  end
+
+  @default_cleanup_batch_size 1000
+
+  @doc """
+  Deletes one batch of `PushDelivery` rows older than `cutoff` (by
+  `inserted_at`), regardless of outcome. This is a safety net, not the
+  primary cleanup path: a delivery row normally deletes itself the moment it
+  reaches a terminal state (delivered, stale, expired subscription, or
+  discarded after `ElixirChat.Workers.DeliverPushNotification`'s final
+  attempt — see `delete_delivery/1`, `discard_delivery/2`). A row surviving
+  past `cutoff` means something outside that lifecycle went wrong (e.g. its
+  Oban job was lost), so this exists to keep such rows from lingering
+  forever rather than to do the everyday cleanup work.
+
+  Returns the number of rows deleted; loop via
+  `ElixirChat.Workers.BatchDelete.run/1` for a full sweep.
+  """
+  def delete_stale_deliveries_before(cutoff, batch_size \\ @default_cleanup_batch_size) do
+    {count, _} =
+      Repo.delete_all(
+        from delivery in PushDelivery,
+          where:
+            delivery.id in subquery(
+              from d in PushDelivery,
+                where: d.inserted_at < ^cutoff,
+                select: d.id,
+                limit: ^batch_size
+            )
+      )
+
+    count
+  end
+
+  @doc """
+  Deletes one batch of `Notification` rows that are both read (per
+  `read_at/1`'s join against `ElixirChat.Chat.ConversationRead`, evaluated
+  inline here for a set-based delete) and older than `cutoff` (by
+  `inserted_at`, the notification's own age — not how recently the
+  recipient last read the conversation, which would keep pushing the cutoff
+  out for any conversation that stays active). Unread notifications are
+  never matched by the join and so are never deleted, no matter their age —
+  the whole reason `read_at/1` exists as a real join instead of a boolean.
+
+  Returns the number of rows deleted; loop via
+  `ElixirChat.Workers.BatchDelete.run/1` for a full sweep.
+  """
+  def delete_read_notifications_before(cutoff, batch_size \\ @default_cleanup_batch_size) do
+    {count, _} =
+      Repo.delete_all(
+        from notification in Notification,
+          where:
+            notification.id in subquery(
+              from n in Notification,
+                join: read in ConversationRead,
+                on:
+                  read.user_id == n.recipient_id and read.channel_id == n.channel_id and
+                    not is_nil(read.last_read_message_id) and
+                    read.last_read_message_id >= n.message_id,
+                where: n.inserted_at < ^cutoff,
+                select: n.id,
+                limit: ^batch_size
+            )
+      )
+
+    count
   end
 
   @doc false
@@ -307,11 +425,27 @@ defmodule ElixirChat.Notifications do
     end
   end
 
-  @doc false
-  def fail_delivery(delivery_id, reason) do
+  @doc """
+  Gives up on a delivery that is still failing on its final Oban attempt (see
+  `ElixirChat.Workers.DeliverPushNotification`) — deletes the row so it does
+  not linger forever with no more attempts left to retry it, mirroring the
+  old manual "discard after 10 attempts" behavior now that Oban owns attempt
+  counting.
+  """
+  def discard_delivery(delivery_id, attempt_count) do
     case Repo.get(PushDelivery, delivery_id) do
-      nil -> :gone
-      delivery -> retry_delivery(delivery, reason)
+      nil ->
+        :ok
+
+      delivery ->
+        :telemetry.execute(
+          [:elixir_chat, :push, :retry_exhausted],
+          %{attempt_count: attempt_count},
+          %{delivery_id: delivery.id, message_id: delivery.message_id}
+        )
+
+        delete_delivery(delivery.id)
+        :ok
     end
   end
 
@@ -397,36 +531,11 @@ defmodule ElixirChat.Notifications do
       retry_delivery(delivery, {kind, reason})
   end
 
-  defp retry_delivery(delivery, reason) do
-    attempts = delivery.attempt_count + 1
-    error = inspect(reason, limit: 20, printable_limit: 500) |> String.slice(0, 1_000)
-
-    if attempts >= 10 do
-      delete_delivery(delivery.id)
-
-      :telemetry.execute(
-        [:elixir_chat, :push, :retry_exhausted],
-        %{attempt_count: attempts},
-        %{delivery_id: delivery.id, message_id: delivery.message_id, error: error}
-      )
-
-      :discarded
-    else
-      delay_seconds = min(round(:math.pow(2, min(attempts - 1, 8))), 300)
-
-      Repo.update_all(
-        from(queued in PushDelivery, where: queued.id == ^delivery.id),
-        set: [
-          attempt_count: attempts,
-          available_at: DateTime.add(DateTime.utc_now(:second), delay_seconds, :second),
-          last_error: error,
-          updated_at: DateTime.utc_now(:second)
-        ]
-      )
-
-      :retry
-    end
-  end
+  # Leaves the delivery row untouched — Oban owns attempt counting and backoff
+  # scheduling for the job that will call this again (or, on the final
+  # attempt, `discard_delivery/2` instead — see
+  # `ElixirChat.Workers.DeliverPushNotification`).
+  defp retry_delivery(_delivery, _reason), do: :retry
 
   defp delete_delivery(delivery_id) do
     Repo.delete_all(from delivery in PushDelivery, where: delivery.id == ^delivery_id)

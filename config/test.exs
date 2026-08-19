@@ -2,16 +2,13 @@ import Config
 
 config :elixir_chat, :env, :test
 
-config :elixir_chat, ElixirChat.OutboxDispatcher,
-  interval: 600_000,
-  batch_size: 50,
-  synchronous_wake_up: true
-
-config :elixir_chat, ElixirChat.NotificationSender,
-  interval: 600_000,
-  batch_size: 50,
-  max_concurrency: 4,
-  task_timeout: 5_000
+# :inline runs a job's perform/1 synchronously, in the calling process, right
+# where it's inserted (including inside an Ecto.Multi, after the wrapping
+# transaction commits) — the same "no separate poller to race against"
+# determinism the old `synchronous_wake_up: true`/`OutboxDispatcher.dispatch_now`
+# test setup relied on, so existing tests that create a message and
+# immediately assert on its broadcast/notify effects keep working unchanged.
+config :elixir_chat, Oban, testing: :inline, plugins: false
 
 # Configure your database
 #

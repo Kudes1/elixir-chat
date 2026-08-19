@@ -7,6 +7,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
   alias ElixirChat.Chat
   alias ElixirChat.Chat.Channel
   alias ElixirChat.Chat.Message
+  alias ElixirChat.Chat.Outbox
   alias ElixirChat.Accounts.Scope
   alias ElixirChat.Notifications
   alias ElixirChat.Repo
@@ -32,6 +33,253 @@ defmodule ElixirChatWeb.ChatLiveTest do
     view |> element("#channel-#{product.id}") |> render_click()
     assert_patch(view, ~p"/channels/#{product.public_id}")
     assert has_element?(view, "#channel-#{product.id}.selected")
+  end
+
+  test "reports missed_event_count/catching_up? from the client's resume cursor", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, _seen} =
+      Chat.create_message(Scope.for_user(user), general, %{body: "Seen before offline"})
+
+    seen_event_id =
+      "channel:#{general.id}"
+      |> Outbox.list_since(0)
+      |> List.last()
+      |> Map.fetch!(:id)
+
+    for i <- 1..3 do
+      Chat.create_message(Scope.for_user(user), general, %{body: "Missed #{i}"})
+    end
+
+    {:ok, view, _html} =
+      conn
+      |> log_in_user(user)
+      |> put_connect_params(%{"last_sequences" => %{"channel:#{general.id}" => seen_event_id}})
+      |> live(~p"/channels/#{general.public_id}")
+
+    assert has_element?(view, "#connection-state[data-catching-up='true']")
+    assert has_element?(view, "#connection-state[data-missed-event-count='3']")
+    assert has_element?(view, "#connection-state[data-connection-state='catching_up']")
+  end
+
+  test "a fresh mount with no resume cursor and no history is not catching up", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    assert has_element?(view, "#connection-state[data-catching-up='false']")
+    assert has_element?(view, "#connection-state[data-missed-event-count='0']")
+    assert has_element?(view, "#connection-state[data-connection-state='live']")
+  end
+
+  test "a resume cursor already at the head reports no missed events", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, _message} =
+      Chat.create_message(Scope.for_user(user), general, %{body: "Already seen"})
+
+    head_event_id =
+      "channel:#{general.id}"
+      |> Outbox.list_since(0)
+      |> List.last()
+      |> Map.fetch!(:id)
+
+    {:ok, view, _html} =
+      conn
+      |> log_in_user(user)
+      |> put_connect_params(%{"last_sequences" => %{"channel:#{general.id}" => head_event_id}})
+      |> live(~p"/channels/#{general.public_id}")
+
+    assert has_element?(view, "#connection-state[data-catching-up='false']")
+    assert has_element?(view, "#connection-state[data-missed-event-count='0']")
+    assert has_element?(view, "#connection-state[data-connection-state='live']")
+  end
+
+  test "pushes a notify event for another user's channel message when the channel isn't open", %{
+    conn: conn,
+    general: general,
+    product: product,
+    user: user
+  } do
+    other_user = register_user(%{display_name: "Олег", login: "notify.sender"})
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{product.public_id}")
+    general_id = general.id
+
+    {:ok, _message} =
+      Chat.create_message(Scope.for_user(other_user), general, %{body: "Пропущенное сообщение"})
+
+    assert_push_event(view, "notify", %{
+      type: "channel",
+      active: false,
+      title: "#general",
+      sender_name: "Олег",
+      sender_login: "notify.sender",
+      channel_id: ^general_id
+    })
+  end
+
+  test "marks the notify event active when the recipient already has that channel open", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    other_user = register_user(%{display_name: "Олег", login: "notify.active"})
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    {:ok, _message} =
+      Chat.create_message(Scope.for_user(other_user), general, %{body: "Уже открыт"})
+
+    assert_push_event(view, "notify", %{type: "channel", active: true})
+  end
+
+  test "a channel message mentioning the viewer notifies at high priority, an ordinary one at low",
+       %{conn: conn, general: general, user: user} do
+    other_user = register_user(%{display_name: "Олег", login: "notify.mention"})
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    {:ok, _mention} =
+      Chat.create_message(Scope.for_user(other_user), general, %{
+        body: "@#{user.login} взгляни на это"
+      })
+
+    assert_push_event(view, "notify", %{type: "channel", priority: "high"})
+
+    {:ok, _ordinary} =
+      Chat.create_message(Scope.for_user(other_user), general, %{body: "Обычное сообщение"})
+
+    assert_push_event(view, "notify", %{type: "channel", priority: "low"})
+  end
+
+  test "never pushes a notify event for the viewer's own message", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    view
+    |> form("#message-form", message: %{body: "Моё сообщение"})
+    |> render_submit()
+
+    refute_push_event(view, "notify", %{})
+  end
+
+  test "never pushes a notify event for a muted channel", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    other_user = register_user(%{display_name: "Олег", login: "notify.muted"})
+    Notifications.set_muted(user, general.id, true)
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    {:ok, _message} =
+      Chat.create_message(Scope.for_user(other_user), general, %{body: "Заглушено"})
+
+    refute_push_event(view, "notify", %{})
+  end
+
+  test "pushes a notify event for a direct message with no title, since the sender's name already says who it's from",
+       %{
+         conn: conn,
+         general: general,
+         user: user
+       } do
+    other_user = register_user(%{display_name: "Мария", login: "notify.direct"})
+
+    assert {:ok, direct} =
+             Chat.get_or_create_direct_conversation(Scope.for_user(user), other_user.id)
+
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+    direct_channel_id = direct.channel.id
+
+    {:ok, _message} =
+      Chat.create_message(Scope.for_user(other_user), direct.channel, %{body: "Личное"})
+
+    assert_push_event(view, "notify", %{
+      type: "direct",
+      priority: "high",
+      active: false,
+      title: nil,
+      sender_name: "Мария",
+      sender_login: "notify.direct",
+      channel_id: ^direct_channel_id
+    })
+  end
+
+  test "notify events stay suppressed until the client acks catch-up, then flow normally", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, _seen} = Chat.create_message(Scope.for_user(user), general, %{body: "До офлайна"})
+
+    seen_event_id =
+      "channel:#{general.id}"
+      |> Outbox.list_since(0)
+      |> List.last()
+      |> Map.fetch!(:id)
+
+    other_user = register_user(%{display_name: "Олег", login: "notify.catchup"})
+
+    {:ok, _missed} =
+      Chat.create_message(Scope.for_user(other_user), general, %{body: "Пропущено офлайн"})
+
+    {:ok, view, _html} =
+      conn
+      |> log_in_user(user)
+      |> put_connect_params(%{"last_sequences" => %{"channel:#{general.id}" => seen_event_id}})
+      |> live(~p"/channels/#{general.public_id}")
+
+    assert has_element?(view, "#connection-state[data-connection-state='catching_up']")
+
+    {:ok, _during_catch_up} =
+      Chat.create_message(Scope.for_user(other_user), general, %{body: "Во время catch-up"})
+
+    refute_push_event(view, "notify", %{})
+
+    render_hook(view, "client_caught_up", %{})
+    assert has_element?(view, "#connection-state[data-connection-state='live']")
+
+    {:ok, _after_catch_up} =
+      Chat.create_message(Scope.for_user(other_user), general, %{body: "После LIVE"})
+
+    assert_push_event(view, "notify", %{type: "channel"})
+  end
+
+  test "a large backlog (500 missed events) reports the full count and pushes no notify events on mount",
+       %{conn: conn, general: general, user: user} do
+    {:ok, _seen} = Chat.create_message(Scope.for_user(user), general, %{body: "До офлайна"})
+
+    seen_event_id =
+      "channel:#{general.id}"
+      |> Outbox.list_since(0)
+      |> List.last()
+      |> Map.fetch!(:id)
+
+    other_user = register_user(%{display_name: "Олег", login: "notify.backlog"})
+
+    for i <- 1..500 do
+      Chat.create_message(Scope.for_user(other_user), general, %{body: "Пропущено #{i}"})
+    end
+
+    {:ok, view, _html} =
+      conn
+      |> log_in_user(user)
+      |> put_connect_params(%{"last_sequences" => %{"channel:#{general.id}" => seen_event_id}})
+      |> live(~p"/channels/#{general.public_id}")
+
+    assert has_element?(view, "#connection-state[data-catching-up='true']")
+    assert has_element?(view, "#connection-state[data-missed-event-count='500']")
+
+    refute_push_event(view, "notify", %{})
   end
 
   test "sends and receives a persisted message", %{conn: conn, general: general, user: user} do

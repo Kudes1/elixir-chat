@@ -17,16 +17,23 @@ config :elixir_chat, ElixirChat.RepoDiagnostics,
   slow_query_ms: 500,
   queue_warn_ms: 100
 
-config :elixir_chat, ElixirChat.OutboxDispatcher,
-  interval: 1_000,
-  batch_size: 50,
-  retention: :timer.hours(24 * 7)
+config :elixir_chat, ElixirChat.Retention,
+  outbox_events_days: 7,
+  push_deliveries_days: 30,
+  notifications_read_days: 90
 
-config :elixir_chat, ElixirChat.NotificationSender,
-  interval: 1_000,
-  batch_size: 50,
-  max_concurrency: 8,
-  task_timeout: 15_000
+config :elixir_chat, Oban,
+  repo: ElixirChat.Repo,
+  queues: [outbox: 10, push: 8, cleanup: 1],
+  plugins: [
+    {Oban.Plugins.Pruner, max_age: 7 * 24 * 60 * 60},
+    {Oban.Plugins.Cron,
+     crontab: [
+       {"0 3 * * *", ElixirChat.Workers.PruneOutboxEvents},
+       {"0 3 * * *", ElixirChat.Workers.PrunePushDeliveries},
+       {"0 3 * * *", ElixirChat.Workers.PruneNotifications}
+     ]}
+  ]
 
 # Web Push endpoints are capability URLs. Never follow a provider response to
 # another origin; this also closes a redirect-based SSRF path.

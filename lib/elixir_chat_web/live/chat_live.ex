@@ -4,17 +4,19 @@ defmodule ElixirChatWeb.ChatLive do
   alias ElixirChat.Accounts
   alias ElixirChat.Accounts.Scope
   alias ElixirChat.Chat
-  alias ElixirChat.Chat.{Channel, DirectConversation, Message}
+  alias ElixirChat.Chat.{Channel, DirectConversation, Message, Outbox}
   alias ElixirChat.Notifications
   alias ElixirChat.OnlineUsers
   alias ElixirChatWeb.Presence
 
   import ElixirChatWeb.ChatLive.Components
-  alias ElixirChatWeb.ChatLive.MessageWindow
+  alias ElixirChatWeb.ChatLive.{ConnectionState, MessageWindow}
 
   @presence_topic "presence:lobby"
   @message_page_size 50
   @default_time_zone "Etc/UTC"
+  @catch_up_batch_size 200
+  @catch_up_max_events 2_000
 
   @impl true
   def mount(_params, _session, socket) do
@@ -45,10 +47,16 @@ defmodule ElixirChatWeb.ChatLive do
     conversation_ids =
       Enum.map(channels, & &1.id) ++ Enum.map(direct_conversations, & &1.direct.channel_id)
 
+    missed_event_count = count_missed_events(socket, conversation_ids)
+    catching_up? = missed_event_count > 0
+
     {:ok,
      socket
      |> assign(:page_title, "Orbit")
      |> assign(:time_zone, browser_time_zone(socket))
+     |> assign(:missed_event_count, missed_event_count)
+     |> assign(:catching_up?, catching_up?)
+     |> assign(:connection_state, ConnectionState.initial_state(catching_up?))
      |> assign(:channels, channels)
      |> assign(:channel, nil)
      |> assign(:direct_conversation, nil)
@@ -100,6 +108,64 @@ defmodule ElixirChatWeb.ChatLive do
       {:error, _reason} -> @default_time_zone
     end
   end
+
+  # Counts durable outbox events the browser hasn't seen yet, resuming from the
+  # per-partition cursors it reported on connect. Purely observational for now
+  # (assigns `:catching_up?`/`:missed_event_count`) — no UI/notification behavior
+  # depends on this yet; it exists so later iterations (client state machine,
+  # silent catch-up) have a correct foundation to build on.
+  defp count_missed_events(socket, conversation_ids) do
+    if connected?(socket) do
+      conversation_ids
+      |> catch_up_cursors(socket)
+      |> tally_missed_events(0)
+    else
+      0
+    end
+  end
+
+  defp catch_up_cursors(conversation_ids, socket) do
+    client_cursors =
+      case get_connect_params(socket) do
+        %{"last_sequences" => map} when is_map(map) -> map
+        _params -> %{}
+      end
+
+    Map.new(conversation_ids, fn channel_id ->
+      partition_key = Outbox.partition_key(channel_id)
+      {partition_key, parse_since_id(Map.get(client_cursors, partition_key))}
+    end)
+  end
+
+  defp tally_missed_events(_cursors, total) when total >= @catch_up_max_events, do: total
+
+  defp tally_missed_events(cursors, total) do
+    case Outbox.list_events_since(cursors, limit: @catch_up_batch_size) do
+      [] ->
+        total
+
+      events ->
+        updated_cursors = advance_cursors(cursors, events)
+        tally_missed_events(updated_cursors, total + length(events))
+    end
+  end
+
+  defp advance_cursors(cursors, events) do
+    Enum.reduce(events, cursors, fn event, acc ->
+      Map.update(acc, event.partition_key, event.id, &max(&1, event.id))
+    end)
+  end
+
+  defp parse_since_id(value) when is_integer(value) and value >= 0, do: value
+
+  defp parse_since_id(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} when int >= 0 -> int
+      _ -> 0
+    end
+  end
+
+  defp parse_since_id(_value), do: 0
 
   @impl true
   def handle_params(
@@ -534,6 +600,19 @@ defmodule ElixirChatWeb.ChatLive do
     end
   end
 
+  # Mirrors the client's CATCHING_UP -> LIVE ("caught_up") transition back onto
+  # `@connection_state`, which mount/3 otherwise only ever sets once and never
+  # updates again for the life of this connected process. Without this, any
+  # live event delivered via handle_info after a backlog catch-up would be
+  # judged against a stale `:catching_up` and NotificationPolicy would treat it
+  # as (correctly, but now permanently) silent catch-up traffic forever.
+  def handle_event("client_caught_up", _params, socket) do
+    case ConnectionState.transition(socket.assigns.connection_state, :caught_up) do
+      {:ok, state} -> {:noreply, assign(socket, :connection_state, state)}
+      {:error, :invalid_transition} -> {:noreply, socket}
+    end
+  end
+
   @impl true
   def handle_info({:message_created, %Message{} = message}, socket) do
     if socket.assigns.channel && message.channel_id == socket.assigns.channel.id do
@@ -544,7 +623,12 @@ defmodule ElixirChatWeb.ChatLive do
   end
 
   def handle_info({:conversation_message_created, %Message{} = message}, socket) do
-    {:noreply, refresh_unread_count(socket, message.channel_id)}
+    socket =
+      socket
+      |> refresh_unread_count(message.channel_id)
+      |> maybe_notify_channel_message(message)
+
+    {:noreply, socket}
   end
 
   def handle_info({:conversation_message_deleted, %Message{} = message}, socket) do
@@ -601,10 +685,17 @@ defmodule ElixirChatWeb.ChatLive do
         {:direct_message_created, %DirectConversation{} = direct, %Message{} = message},
         socket
       ) do
-    socket = socket |> upsert_direct(direct, true) |> refresh_unread_count(message.channel_id)
+    active? =
+      not is_nil(socket.assigns.direct_conversation) &&
+        socket.assigns.direct_conversation.id == direct.id
 
-    if socket.assigns.direct_conversation &&
-         socket.assigns.direct_conversation.id == direct.id do
+    socket =
+      socket
+      |> upsert_direct(direct, true)
+      |> refresh_unread_count(message.channel_id)
+      |> maybe_notify_direct_message(direct, message, active?)
+
+    if active? do
       {:noreply, MessageWindow.receive_message(socket, message)}
     else
       {:noreply, socket}
@@ -644,6 +735,13 @@ defmodule ElixirChatWeb.ChatLive do
     {:noreply, assign(socket, :online_count, count)}
   end
 
+  # Side-channel sequence advance (see ElixirChat.OutboxPublisher.broadcast_event_sequence/2).
+  # Forwarded to the browser so it can keep its per-partition resume cursor current
+  # while LIVE, without this being folded into the message/notification handlers above.
+  def handle_info({:event_sequence, partition_key, seq}, socket) do
+    {:noreply, push_event(socket, "event_seq", %{partition_key: partition_key, seq: seq})}
+  end
+
   def handle_info({Presence, {:metas, key, metas}}, socket) do
     case Integer.parse(key) do
       {id, ""} ->
@@ -680,6 +778,86 @@ defmodule ElixirChatWeb.ChatLive do
     else
       {:noreply, socket}
     end
+  end
+
+  # NotificationPolicy input: which conversation, whether the recipient is
+  # currently looking at it (server-known), and message content for the
+  # toast/sound decision made client-side in assets/js/notification_policy.js.
+  # Never sent for the author's own message, while muted (mirrors the existing
+  # push-notification mute filtering in ElixirChat.Notifications), or before
+  # `@connection_state` is `:live` — this is what makes catch-up silent by
+  # construction rather than by a per-event check on the client.
+  #
+  # `priority` is resolved here rather than left for the client to infer from
+  # `type`, since only the server knows (from the durable Notification rows —
+  # `Notifications.mentioned?/2`) whether this particular recipient was
+  # actually `@mention`-ed: a plain channel message is "low" for everyone,
+  # but a channel message that mentions this recipient is just as urgent as
+  # a DM ("high"), and no two recipients of the same message necessarily
+  # agree on which it is.
+  defp maybe_notify_channel_message(socket, message) do
+    user = socket.assigns.current_scope.user
+
+    if notifiable?(socket, user, message) do
+      channel = Enum.find(socket.assigns.channels, &(&1.id == message.channel_id))
+
+      priority = if Notifications.mentioned?(message.id, user.id), do: "high", else: "low"
+
+      push_notify(socket, message, %{
+        type: "channel",
+        priority: priority,
+        active:
+          not is_nil(socket.assigns.channel) && socket.assigns.channel.id == message.channel_id,
+        title: (channel && "##{channel.name}") || "Канал"
+      })
+    else
+      socket
+    end
+  end
+
+  defp maybe_notify_direct_message(socket, _direct, message, active?) do
+    user = socket.assigns.current_scope.user
+
+    if notifiable?(socket, user, message) do
+      push_notify(socket, message, %{
+        type: "direct",
+        priority: "high",
+        active: active?,
+        title: nil
+      })
+    else
+      socket
+    end
+  end
+
+  defp notifiable?(socket, user, message) do
+    message.user_id != user.id and socket.assigns.connection_state == :live and
+      not Notifications.muted?(user.id, message.channel_id)
+  end
+
+  defp push_notify(socket, message, attrs) do
+    push_event(socket, "notify", %{
+      type: attrs.type,
+      priority: attrs.priority,
+      active: attrs.active,
+      title: attrs.title,
+      sender_name: message.author_name,
+      sender_login: message.user && message.user.login,
+      preview: message_preview(message.body),
+      # Conversation grouping key for the client's sound-cooldown gate
+      # (assets/js/sound_cooldown.js) — a burst of several notifies for the
+      # same channel/direct conversation should collapse to one sound, not
+      # silence unrelated conversations too.
+      channel_id: message.channel_id
+    })
+  end
+
+  defp message_preview(body) do
+    body
+    |> to_string()
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> String.slice(0, 140)
   end
 
   defp load_public_channel(socket, channel),

@@ -24,6 +24,9 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/elixir_chat"
 import topbar from "../vendor/topbar"
+import {decide as decideNotification} from "./notification_policy"
+import {showToast, playNotificationSound} from "./notification_ui"
+import {createCooldownState, shouldPlaySound} from "./sound_cooldown"
 
 const systemTheme = () => matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
 const setTheme = theme => {
@@ -716,11 +719,168 @@ const PushNotifications = {
   },
 }
 
+// Per-partition ("channel:<id>") resume cursors: the highest outbox event
+// sequence this browser has already applied. Sent back on every connect/
+// reconnect so the server can replay only what was missed. Advanced live via
+// the "event_seq" server-pushed event (see ElixirChatWeb.ChatLive's
+// handle_info({:event_sequence, ...})) so it stays current between visits,
+// not just at catch-up time.
+const EVENT_SEQ_STORAGE_KEY = "orbit:event-seq:v1"
+
+const readEventSequenceCursors = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(EVENT_SEQ_STORAGE_KEY))
+    return (parsed && typeof parsed === "object") ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+const writeEventSequenceCursors = cursors => {
+  try {
+    localStorage.setItem(EVENT_SEQ_STORAGE_KEY, JSON.stringify(cursors))
+  } catch {
+    // localStorage unavailable (private mode/quota) - cursors just won't persist
+  }
+}
+
+window.addEventListener("phx:event_seq", ({detail}) => {
+  const partitionKey = detail?.partition_key
+  const seq = detail?.seq
+  if (!partitionKey || typeof seq !== "number") return
+
+  const cursors = readEventSequenceCursors()
+  if (!(cursors[partitionKey] >= seq)) {
+    cursors[partitionKey] = seq
+    writeEventSequenceCursors(cursors)
+  }
+})
+
+// Client connection state machine: DISCONNECTED -> CONNECTING -> (CATCHING_UP
+// | LIVE). Mirrors ElixirChatWeb.ChatLive.ConnectionState.transition/2 (lib/
+// elixir_chat_web/live/chat_live/connection_state.ex), which is the source of
+// truth for which transitions are valid — keep both tables in sync. "connect"/
+// "disconnect" are only observable client-side (the browser knows about the
+// socket before the server does); whether a connect resolves to CATCHING_UP or
+// LIVE always comes from the server via #connection-state's data attributes,
+// computed by the same Elixir module.
+const CONNECTION_TRANSITIONS = {
+  "disconnected:connect": "connecting",
+  "connecting:connected_live": "live",
+  "connecting:connected_catching_up": "catching_up",
+  "connecting:disconnect": "disconnected",
+  "catching_up:caught_up": "live",
+  "catching_up:disconnect": "disconnected",
+  "live:disconnect": "disconnected",
+  "disconnected:disconnect": "disconnected",
+}
+
+const connectionState = {
+  current: "disconnected",
+  listeners: [],
+  onChange(listener) {
+    this.listeners.push(listener)
+  },
+  send(event) {
+    const next = CONNECTION_TRANSITIONS[`${this.current}:${event}`]
+    if (!next) {
+      console.warn(`[connection-state] ignored invalid transition "${event}" from "${this.current}"`)
+      return this.current
+    }
+    if (next !== this.current) {
+      this.current = next
+      this.listeners.forEach(listener => listener(next))
+    }
+    return next
+  },
+}
+
+// Resolves CONNECTING once a (re)connect completes, using the freshly rendered
+// #connection-state data attributes (computed server-side by ConnectionState.
+// initial_state/1) to decide whether we land in CATCHING_UP or LIVE.
+const resolveConnected = hook => {
+  const el = document.getElementById("connection-state")
+  const catchingUp = el?.dataset.catchingUp === "true"
+  const resolved = connectionState.send(catchingUp ? "connected_catching_up" : "connected_live")
+
+  if (resolved === "catching_up") {
+    // Nothing async to wait for yet — the backlog is already reflected in the
+    // freshly rendered state, not replayed event-by-event. Tell the server too
+    // (ChatLive's `client_caught_up` handle_event), since `@connection_state`
+    // otherwise never advances past :catching_up for the life of this connected
+    // process — and NotificationPolicy's server-side "only push while live"
+    // gate depends on that assign being current.
+    queueMicrotask(() => {
+      connectionState.send("caught_up")
+      hook.pushEvent("client_caught_up", {})
+    })
+  }
+}
+
+const ConnectionState = {
+  mounted() {
+    resolveConnected(this)
+  },
+  reconnected() {
+    resolveConnected(this)
+  },
+  disconnected() {
+    connectionState.send("disconnect")
+    // Phoenix's LiveSocket retries automatically, so we're immediately back to
+    // attempting a connection rather than sitting idle.
+    connectionState.send("connect")
+  },
+}
+
+// NotificationPolicy wiring: ChatLive pushes "notify" only for events the
+// server already knows can't be silent-by-construction catch-up traffic, the
+// author's own message, or a muted conversation (see `maybe_notify_*` in
+// chat_live.ex). Everything genuinely client-only — current connection state,
+// tab visibility/focus — is supplied here, right before the decision is made.
+// `priority` itself also comes from the server (a DM, or a channel message
+// that actually `@mention`-ed this recipient, is "high"; an ordinary channel
+// message is "low") — only the server can tell mention from non-mention.
+//
+// Sound-spam protection (tasks/05-sound-spam-protection.md): several "sound"
+// decisions in a row for the *same conversation* (e.g. a burst of DMs from
+// one person while the tab is unfocused) must not become a burst of beeps.
+// `soundCooldownState` groups by `channel_id` — the same identifier the
+// server already resolves for both channel and direct messages — so the
+// toast/badge still fire for every event (data isn't suppressed, only the
+// sound), while `shouldPlaySound` throttles the sound itself, independently
+// per conversation, per the single config in sound_cooldown.js.
+const soundCooldownState = createCooldownState()
+
+window.addEventListener("phx:notify", ({detail}) => {
+  const priority = detail?.priority === "high" ? "high" : "low"
+  const decision = decideNotification({
+    connectionState: connectionState.current,
+    active: Boolean(detail?.active),
+    tabVisible: document.visibilityState === "visible",
+    tabFocused: document.hasFocus(),
+    priority,
+  })
+
+  if (decision === "toast" || decision === "sound") {
+    showToast({
+      title: detail?.title,
+      senderName: detail?.sender_name,
+      senderLogin: detail?.sender_login,
+      preview: detail?.preview,
+    })
+  }
+  if (decision === "sound" &&
+      shouldPlaySound(soundCooldownState, detail?.channel_id, priority, Date.now())) {
+    playNotificationSound()
+  }
+})
+
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: () => ({
     _csrf_token: csrfToken,
     time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    last_sequences: readEventSequenceCursors(),
   }),
   hooks: {
     ...colocatedHooks,
@@ -731,6 +891,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     MessageDeleteWindow,
     MessageEditWindow,
     PushNotifications,
+    ConnectionState,
   },
 })
 
@@ -740,6 +901,7 @@ window.addEventListener("phx:page-loading-start", _info => topbar.show(300))
 window.addEventListener("phx:page-loading-stop", _info => topbar.hide())
 
 // connect if there are any LiveViews on the page
+connectionState.send("connect")
 liveSocket.connect()
 
 // expose liveSocket on window for web console debug logs and latency simulation:
@@ -747,6 +909,11 @@ liveSocket.connect()
 // >> liveSocket.enableLatencySim(1000)  // enabled for duration of browser session
 // >> liveSocket.disableLatencySim()
 window.liveSocket = liveSocket
+
+// expose the connection state machine for debugging and for later iterations
+// (NotificationPolicy) to read `window.orbitConnectionState.current`:
+// >> orbitConnectionState.current
+window.orbitConnectionState = connectionState
 
 // The lines below enable quality of life phoenix_live_reload
 // development features:
