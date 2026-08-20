@@ -1,5 +1,5 @@
 <Layouts.app flash={@flash} current_scope={@current_scope}>
-  <main class="mx-auto mt-20 max-w-md p-8">
+  <main class="form-card">
     <h1 class="text-3xl font-bold">Задайте пароль</h1>
     <p :if={@invitation && @invitation.login} class="mt-2">
       Аккаунт: <strong>{@invitation.login}</strong> — {@invitation.display_name}
@@ -19,7 +19,7 @@
         label="Повторите пароль"
         required
       />
-      <button id="accept-invitation" class="btn btn-primary w-full">Сохранить</button>
+      <.button id="accept-invitation" class="w-full">Сохранить</.button>
     </.form>
   </main>
 </Layouts.app>

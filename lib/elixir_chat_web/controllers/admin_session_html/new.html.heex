@@ -1,5 +1,5 @@
 <Layouts.app flash={@flash} current_scope={@current_scope}>
-  <main class="mx-auto mt-20 max-w-md p-8">
+  <main class="form-card">
     <h1 class="text-2xl font-bold">Подтвердите пароль администратора</h1>
     <.form for={@form} id="sudo-form" action={~p"/admin/reauth"} class="mt-6 space-y-4">
       <.input
@@ -9,7 +9,7 @@
         label="Пароль"
         required
       />
-      <button id="sudo-submit" class="btn btn-primary w-full">Продолжить</button>
+      <.button id="sudo-submit" class="w-full">Продолжить</.button>
     </.form>
   </main>
 </Layouts.app>

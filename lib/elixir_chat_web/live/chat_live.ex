@@ -83,6 +83,7 @@ defmodule ElixirChatWeb.ChatLive do
      |> assign(:channel_catalog_open?, false)
      |> assign(:channel_settings_open?, false)
      |> assign(:channel_members_open?, false)
+     |> assign(:user_settings_open?, false)
      |> assign(:channel_form, channel_form())
      |> assign(:available_channels, [])
      |> assign(:channel_memberships, [])
@@ -237,6 +238,12 @@ defmodule ElixirChatWeb.ChatLive do
   end
 
   def handle_event("send_message", _params, socket), do: {:noreply, socket}
+
+  def handle_event("open_user_settings", _params, socket),
+    do: {:noreply, assign(socket, :user_settings_open?, true)}
+
+  def handle_event("close_user_settings", _params, socket),
+    do: {:noreply, assign(socket, :user_settings_open?, false)}
 
   def handle_event("open_channel_create", _params, socket) do
     {:noreply,

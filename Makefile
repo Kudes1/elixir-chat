@@ -6,7 +6,7 @@ SHELL := /bin/bash
 #     make dev-up
 
 .PHONY: prod-up prod-down prod-logs dev-up dev-down dev-logs \
-        admin-bootstrap admin-transfer admin-reset test precommit
+        admin-bootstrap admin-transfer admin-reset test ui-test precommit
 
 ## Production ---------------------------------------------------------------
 
@@ -46,5 +46,9 @@ admin-reset: ## Generate a password-reset invitation for the admin
 test: ## Run the test suite inside the web container
 	docker compose -f compose.yaml -f compose.dev.yaml exec web mix test
 
-precommit: ## Run the precommit checks inside the web container
+ui-test: ## Run Chromium UI and accessibility tests in an isolated stack
+	docker compose -f compose.e2e.yaml up --build --abort-on-container-exit --exit-code-from e2e e2e
+
+precommit: ## Run unit checks, then isolated UI and accessibility tests
 	docker compose -f compose.yaml -f compose.dev.yaml exec web mix precommit
+	$(MAKE) ui-test

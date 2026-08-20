@@ -31,11 +31,23 @@ defmodule ElixirChatWeb.Layouts do
     default: nil,
     doc: "the current [scope](https://phoenix.hexdocs.pm/scopes.html)"
 
+  attr :shell, :atom, values: [:page, :chat], default: :page
+
   slot :inner_block, required: true
 
   def app(assigns) do
     ~H"""
-    {render_slot(@inner_block)}
+    <%= if @shell == :chat do %>
+      {render_slot(@inner_block)}
+    <% else %>
+      <div class="page-shell">
+        <header class="page-header">
+          <.link navigate={~p"/"} class="page-brand">Orbit</.link>
+          <.theme_switcher id="page-theme-switcher" />
+        </header>
+        <div class="page-content">{render_slot(@inner_block)}</div>
+      </div>
+    <% end %>
     <.flash_group flash={@flash} />
     """
   end
@@ -94,35 +106,5 @@ defmodule ElixirChatWeb.Layouts do
 
   See <head> in root.html.heex which applies the theme before page load.
   """
-  def theme_toggle(assigns) do
-    ~H"""
-    <div class="card relative flex flex-row items-center border-2 border-base-300 bg-base-300 rounded-full">
-      <div class="absolute w-1/3 h-full rounded-full border-1 border-base-200 bg-base-100 brightness-200 left-0 [[data-theme=light]_&]:left-1/3 [[data-theme=dark]_&]:left-2/3 [[data-theme-source=system]_&]:!left-0 transition-[left]" />
-
-      <button
-        class="flex p-2 cursor-pointer w-1/3"
-        phx-click={JS.dispatch("phx:set-theme")}
-        data-phx-theme="system"
-      >
-        <.icon name="hero-computer-desktop-micro" class="size-4 opacity-75 hover:opacity-100" />
-      </button>
-
-      <button
-        class="flex p-2 cursor-pointer w-1/3"
-        phx-click={JS.dispatch("phx:set-theme")}
-        data-phx-theme="light"
-      >
-        <.icon name="hero-sun-micro" class="size-4 opacity-75 hover:opacity-100" />
-      </button>
-
-      <button
-        class="flex p-2 cursor-pointer w-1/3"
-        phx-click={JS.dispatch("phx:set-theme")}
-        data-phx-theme="dark"
-      >
-        <.icon name="hero-moon-micro" class="size-4 opacity-75 hover:opacity-100" />
-      </button>
-    </div>
-    """
-  end
+  def theme_toggle(assigns), do: theme_switcher(assigns)
 end

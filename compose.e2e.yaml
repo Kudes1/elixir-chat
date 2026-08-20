@@ -1,0 +1,54 @@
+services:
+  db-e2e:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: orbit_e2e
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_e2e_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d orbit_e2e"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  web-e2e:
+    build:
+      context: .
+      target: development
+    entrypoint: ["sh", "/app/e2e/web-entrypoint.sh"]
+    depends_on:
+      db-e2e:
+        condition: service_healthy
+    environment:
+      DB_HOST: db-e2e
+      PHX_IP: 0.0.0.0
+      PORT: 4000
+      POSTGRES_DB: orbit_e2e
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      E2E: "true"
+    volumes:
+      - .:/app
+      - mix_deps_e2e:/app/deps
+      - mix_build_e2e:/app/_build
+
+  e2e:
+    image: mcr.microsoft.com/playwright:v1.62.1-noble
+    working_dir: /work/e2e
+    depends_on:
+      - web-e2e
+    environment:
+      BASE_URL: http://web-e2e:4000
+      CI: "true"
+    volumes:
+      - ./e2e:/work/e2e
+      - playwright_node_modules:/work/e2e/node_modules
+    command: ["sh", "-c", "npm ci && node wait-and-test.mjs"]
+
+volumes:
+  postgres_e2e_data:
+  mix_deps_e2e:
+  mix_build_e2e:
+  playwright_node_modules:

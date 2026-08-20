@@ -46,6 +46,10 @@ const setTheme = theme => {
     document.documentElement.setAttribute("data-theme", theme)
     document.documentElement.setAttribute("data-theme-source", "user")
   }
+
+  document.querySelectorAll("[data-phx-theme]").forEach(button => {
+    button.setAttribute("aria-pressed", String(button.dataset.phxTheme === theme))
+  })
 }
 
 setTheme(localStorage.getItem("phx:theme") || "system")
@@ -333,6 +337,8 @@ const SidebarResize = {
     this.maxWidth = Number(this.el.dataset.sidebarMaxWidth) || 480
     this.pointerId = null
     this.activeResizer = null
+    this.mobileQuery = matchMedia("(max-width: 720px)")
+    this.sidebar = this.el.querySelector("#chat-sidebar")
 
     this.normalizedWidth = width => {
       return Math.min(this.maxWidth, Math.max(this.minWidth, Math.round(width)))
@@ -413,6 +419,15 @@ const SidebarResize = {
     }
 
     this.handleResize = () => this.applyWidth()
+    this.syncSidebarA11y = () => {
+      if (!this.sidebar) return
+      const closedMobile = this.mobileQuery.matches && !this.sidebar.classList.contains("sidebar-open")
+      this.sidebar.toggleAttribute("inert", closedMobile)
+      if (closedMobile) this.sidebar.setAttribute("aria-hidden", "true")
+      else this.sidebar.removeAttribute("aria-hidden")
+    }
+    this.handleMediaChange = () => this.syncSidebarA11y()
+    this.sidebarObserver = new MutationObserver(() => this.syncSidebarA11y())
     this.handleStorage = event => {
       if (event.key !== this.storageKey) return
       this.preferredWidth = this.readWidth(event.newValue)
@@ -421,15 +436,19 @@ const SidebarResize = {
 
     this.preferredWidth = this.readWidth()
     this.applyWidth()
+    this.syncSidebarA11y()
+    if (this.sidebar) this.sidebarObserver.observe(this.sidebar, {attributes: true, attributeFilter: ["class"]})
     this.el.addEventListener("pointerdown", this.handlePointerDown)
     this.el.addEventListener("pointermove", this.handlePointerMove)
     this.el.addEventListener("pointerup", this.finishResize)
     this.el.addEventListener("pointercancel", this.finishResize)
     window.addEventListener("resize", this.handleResize)
     window.addEventListener("storage", this.handleStorage)
+    this.mobileQuery.addEventListener("change", this.handleMediaChange)
   },
   updated() {
     this.applyWidth()
+    this.syncSidebarA11y()
   },
   destroyed() {
     this.el.removeEventListener("pointerdown", this.handlePointerDown)
@@ -438,7 +457,36 @@ const SidebarResize = {
     this.el.removeEventListener("pointercancel", this.finishResize)
     window.removeEventListener("resize", this.handleResize)
     window.removeEventListener("storage", this.handleStorage)
+    this.mobileQuery.removeEventListener("change", this.handleMediaChange)
+    this.sidebarObserver.disconnect()
     this.el.classList.remove("sidebar-resizing")
+  },
+}
+
+const SidebarResizerKeyboard = {
+  mounted() {
+    this.handleKeydown = event => {
+      const min = Number(this.el.getAttribute("aria-valuemin"))
+      const max = Number(this.el.getAttribute("aria-valuemax"))
+      const current = Number(this.el.getAttribute("aria-valuenow"))
+      let width
+      if (event.key === "ArrowLeft") width = current - 8
+      else if (event.key === "ArrowRight") width = current + 8
+      else if (event.key === "Home") width = min
+      else if (event.key === "End") width = max
+      else return
+      event.preventDefault()
+      width = Math.min(max, Math.max(min, width))
+      this.el.closest("#chat-shell")?.style.setProperty("--orbit-sidebar-width", `${width}px`)
+      this.el.setAttribute("aria-valuenow", String(width))
+      localStorage.setItem("orbit:sidebar-width:v1", String(width))
+    }
+    this.el.addEventListener("keydown", this.handleKeydown)
+    this.el.dataset.keyboardReady = "true"
+  },
+  destroyed() {
+    this.el.removeEventListener("keydown", this.handleKeydown)
+    delete this.el.dataset.keyboardReady
   },
 }
 
@@ -504,48 +552,55 @@ const urlBase64ToUint8Array = base64 => {
 const PushNotifications = {
   mounted() {
     this.optOutKey = "orbit:push-opt-out:v1"
-    this.button = this.el.querySelector("[data-notifications-toggle]")
+    this.button = null
     this.vapidKey = this.el.dataset.vapidPublicKey
     this.enabled = this.el.dataset.pushEnabled === "true"
     this.busy = false
 
-    this.supported = Boolean(this.button) &&
+    this.supported = this.el.dataset.pushAvailable === "true" &&
       "serviceWorker" in navigator &&
       "PushManager" in window &&
       "Notification" in window &&
       Boolean(this.vapidKey)
 
-    if (!this.supported) {
-      if (this.button) this.button.hidden = true
-      return
-    }
-
     this.toggle = event => {
       event.preventDefault()
       this.toggleSubscription()
     }
-    this.button.addEventListener("click", this.toggle)
-    this.render()
+    this.connectButton()
 
     // this.ready lets a click that lands before registration settles wait for
     // it instead of silently doing nothing; the trailing .catch keeps it from
     // rejecting, so awaiting it later is always safe.
-    this.ready = navigator.serviceWorker.register("/sw.js")
-      .then(registration => {
-        this.registration = registration
-        return this.reconcile()
-      })
-      .catch(error => {
-        console.warn("Unable to register the push notification service worker", error)
-        this.render()
-      })
+    this.ready = this.supported
+      ? navigator.serviceWorker.register("/sw.js")
+        .then(registration => {
+          this.registration = registration
+          return this.reconcile()
+        })
+        .catch(error => {
+          console.warn("Unable to register the push notification service worker", error)
+          this.render()
+        })
+      : Promise.resolve()
   },
   updated() {
     // Reflect state changes pushed from the server (another tab unsubscribed,
     // an admin cleared subscriptions, …). Skip while we own an in-flight
     // change so we don't clobber it with a stale server value mid-flight.
-    if (!this.supported || this.busy) return
-    this.enabled = this.el.dataset.pushEnabled === "true"
+    if (!this.busy) this.enabled = this.el.dataset.pushEnabled === "true"
+    this.connectButton()
+  },
+  connectButton() {
+    const button = this.el.querySelector("[data-notifications-toggle]")
+    if (button === this.button) {
+      this.render()
+      return
+    }
+
+    this.button?.removeEventListener("click", this.toggle)
+    this.button = button
+    this.button?.addEventListener("click", this.toggle)
     this.render()
   },
   async reconcile() {
@@ -694,6 +749,7 @@ const PushNotifications = {
     return new Promise(resolve => this.pushEvent(event, payload, resolve))
   },
   state() {
+    if (!this.supported) return "unavailable"
     if (this.busy) return "pending"
     if (Notification.permission === "denied") return "blocked"
     return this.enabled ? "on" : "off"
@@ -703,18 +759,21 @@ const PushNotifications = {
 
     const state = this.state()
     const labels = {
-      on: "Отключить уведомления",
-      off: "Включить уведомления",
-      pending: "Изменение настроек уведомлений…",
-      blocked: "Уведомления заблокированы в настройках браузера. Разрешите их для этого сайта, чтобы включить.",
+      on: "Включены",
+      off: "Выключены",
+      pending: "Сохраняем…",
+      blocked: "Заблокированы",
+      unavailable: "Недоступны",
     }
 
     this.button.dataset.notificationsState = state
-    this.button.disabled = state === "pending"
+    this.button.disabled = ["pending", "blocked", "unavailable"].includes(state)
     this.button.setAttribute("aria-busy", String(state === "pending"))
     this.button.setAttribute("aria-pressed", String(state === "on"))
-    this.button.setAttribute("aria-label", `Браузерные уведомления: ${labels[state].toLowerCase()}`)
-    this.button.title = labels[state]
+    this.button.setAttribute("aria-label", `Браузерные уведомления: ${labels[state]}`)
+    this.button.title = state === "on" ? "Отключить уведомления" : state === "off" ? "Включить уведомления" : labels[state]
+    const status = this.button.querySelector("[data-notifications-status]")
+    if (status) status.textContent = labels[state]
 
     const on = this.button.querySelector('[data-notifications-icon="on"]')
     const off = this.button.querySelector('[data-notifications-icon="off"]')
@@ -776,6 +835,8 @@ const NotificationSound = {
       this.el.setAttribute("aria-pressed", String(state))
       this.el.setAttribute("aria-label", `Звук уведомлений: ${state ? "включён" : "отключён"}`)
       this.el.title = state ? "Отключить звук уведомлений" : "Включить звук уведомлений"
+      const status = this.el.querySelector("[data-notification-sound-status]")
+      if (status) status.textContent = state ? "Включён" : "Выключен"
 
       const on = this.el.querySelector('[data-notification-sound-icon="on"]')
       const off = this.el.querySelector('[data-notification-sound-icon="off"]')
@@ -1053,6 +1114,7 @@ const liveSocket = new LiveSocket("/live", Socket, {
     MessageList,
     SidebarSections,
     SidebarResize,
+    SidebarResizerKeyboard,
     MessageDeleteWindow,
     MessageEditWindow,
     PushNotifications,

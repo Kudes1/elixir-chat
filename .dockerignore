@@ -8,4 +8,7 @@ doc
 tmp
 .env
 npm-debug.log
+e2e/node_modules
+e2e/test-results
+e2e/playwright-report
 npm-debug.log

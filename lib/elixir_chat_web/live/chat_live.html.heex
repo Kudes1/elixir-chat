@@ -1,4 +1,4 @@
-<Layouts.app flash={@flash} current_scope={@current_scope}>
+<Layouts.app flash={@flash} current_scope={@current_scope} shell={:chat}>
   <main
     id="chat-shell"
     class="chat-shell"
@@ -16,23 +16,35 @@
       hidden
     >
     </div>
-    <.sidebar
-      channels={@channels}
-      channel={@channel}
-      direct_conversation_id={@direct_conversation && @direct_conversation.id}
-      direct_conversations={@direct_conversations}
-      direct_search_open?={@direct_search_open?}
-      direct_search_form={@direct_search_form}
-      direct_search_results={@direct_search_results}
-      channel_create_open?={@channel_create_open?}
-      channel_catalog_open?={@channel_catalog_open?}
-      current_user={@current_scope.user}
-      visitor_name={@visitor_name}
-      online_user_ids={@online_user_ids}
-      unread_counts={@unread_counts}
-      push_enabled?={@push_enabled?}
-      vapid_public_key={@vapid_public_key}
-    />
+    <div
+      id="user-settings-root"
+      class="user-settings-root"
+      phx-hook="PushNotifications"
+      data-vapid-public-key={@vapid_public_key}
+      data-push-enabled={to_string(@push_enabled?)}
+      data-push-available={to_string(@notifications_available?)}
+    >
+      <.sidebar
+        channels={@channels}
+        channel={@channel}
+        direct_conversation_id={@direct_conversation && @direct_conversation.id}
+        direct_conversations={@direct_conversations}
+        direct_search_open?={@direct_search_open?}
+        direct_search_form={@direct_search_form}
+        direct_search_results={@direct_search_results}
+        channel_create_open?={@channel_create_open?}
+        channel_catalog_open?={@channel_catalog_open?}
+        user_settings_open?={@user_settings_open?}
+        current_user={@current_scope.user}
+        visitor_name={@visitor_name}
+        online_user_ids={@online_user_ids}
+        unread_counts={@unread_counts}
+      />
+      <.user_settings
+        :if={@user_settings_open?}
+        push_enabled?={@push_enabled?}
+      />
+    </div>
     <div
       id="sidebar-resizer"
       class="sidebar-resizer"
@@ -43,7 +55,9 @@
       aria-valuemin="220"
       aria-valuemax="480"
       aria-valuenow="264"
+      tabindex="0"
       data-sidebar-resizer
+      phx-hook="SidebarResizerKeyboard"
     >
     </div>
     <button
@@ -52,7 +66,6 @@
       class="sidebar-overlay"
       aria-label="Закрыть навигацию"
       phx-click={close_sidebar()}
-      style="display: none"
     ></button>
 
     <section

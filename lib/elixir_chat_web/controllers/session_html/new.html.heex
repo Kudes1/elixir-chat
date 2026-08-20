@@ -1,5 +1,5 @@
 <Layouts.app flash={@flash} current_scope={@current_scope}>
-  <main class="mx-auto mt-20 max-w-md p-8">
+  <main class="form-card">
     <h1 class="text-3xl font-bold">Вход в Orbit</h1>
     <.form for={@form} id="login-form" action={~p"/login"} class="mt-8 space-y-4">
       <.input
@@ -17,7 +17,7 @@
         autocomplete="current-password"
         required
       />
-      <button id="login-submit" class="btn btn-primary w-full">Войти</button>
+      <.button id="login-submit" class="w-full">Войти</.button>
     </.form>
   </main>
 </Layouts.app>

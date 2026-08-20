@@ -12,12 +12,11 @@ defmodule ElixirChatWeb.ChatLive.Components do
   attr :direct_search_results, :list, required: true
   attr :channel_create_open?, :boolean, required: true
   attr :channel_catalog_open?, :boolean, required: true
+  attr :user_settings_open?, :boolean, required: true
   attr :current_user, :any, required: true
   attr :visitor_name, :string, required: true
   attr :online_user_ids, :any, required: true
   attr :unread_counts, :map, required: true
-  attr :push_enabled?, :boolean, default: false
-  attr :vapid_public_key, :string, default: ""
 
   def sidebar(assigns) do
     ~H"""
@@ -25,7 +24,7 @@ defmodule ElixirChatWeb.ChatLive.Components do
       id="chat-sidebar"
       class="chat-sidebar sidebar-sections-pending"
       phx-hook="SidebarSections"
-      phx-window-keydown={close_sidebar()}
+      phx-window-keydown={if @user_settings_open?, do: nil, else: close_sidebar()}
       phx-key="escape"
       aria-label="Навигация чата"
     >
@@ -195,63 +194,105 @@ defmodule ElixirChatWeb.ChatLive.Components do
           </div>
         </section>
       </nav>
-      <footer
-        id="current-user"
-        class="sidebar-profile"
-        phx-hook="PushNotifications"
-        data-vapid-public-key={@vapid_public_key}
-        data-push-enabled={to_string(@push_enabled?)}
-      >
-        <.user_avatar name={@visitor_name} user_id={@current_user.id} class="profile-avatar" />
-        <div class="profile-details">
-          <strong>{@visitor_name}</strong><small id="current-user-login" class="current-user-login">@{@current_user.login}</small>
-        </div>
+      <footer id="current-user" class="sidebar-profile">
         <button
-          id="notifications-toggle"
+          id="open-user-settings"
           type="button"
-          class="notifications-toggle"
-          data-notifications-toggle
-          aria-label="Браузерные уведомления"
-          aria-pressed={to_string(@push_enabled?)}
-          title={if @push_enabled?, do: "Отключить уведомления", else: "Включить уведомления"}
+          class="profile-button"
+          phx-click="open_user_settings"
+          aria-label="Открыть настройки профиля"
+          aria-haspopup="dialog"
+          aria-expanded={to_string(@user_settings_open?)}
         >
-          <span class="notifications-icon" data-notifications-icon="on"><.icon
-            name="hero-bell"
-            class="size-4"
-          /></span>
-          <span class="notifications-icon" data-notifications-icon="off" hidden><.icon
-            name="hero-bell-slash"
-            class="size-4"
-          /></span>
+          <.user_avatar name={@visitor_name} user_id={@current_user.id} class="profile-avatar" />
+          <span class="profile-details">
+            <strong>{@visitor_name}</strong><small id="current-user-login" class="current-user-login">@{@current_user.login}</small>
+          </span>
+          <.icon name="hero-cog-6-tooth" class="profile-settings-icon size-5" />
         </button>
-        <button
-          id="notification-sound-toggle"
-          type="button"
-          class="notifications-toggle"
-          phx-hook="NotificationSound"
-          data-notification-sound-toggle
-          aria-label="Звук уведомлений"
-          aria-pressed="true"
-          title="Отключить звук уведомлений"
-        >
-          <span class="notifications-icon" data-notification-sound-icon="on"><.icon
-            name="hero-speaker-wave"
-            class="size-4"
-          /></span>
-          <span class="notifications-icon" data-notification-sound-icon="off" hidden><.icon
-            name="hero-speaker-x-mark"
-            class="size-4"
-          /></span>
-        </button>
-        <.link
-          href={~p"/logout"}
-          method="delete"
-          id="logout-link"
-          class="logout-link"
-          aria-label="Выйти из Orbit"
-        >Выйти</.link>
       </footer>
     </aside>
+    """
+  end
+
+  attr :push_enabled?, :boolean, required: true
+
+  def user_settings(assigns) do
+    ~H"""
+    <.dialog
+      id="user-settings"
+      title="Настройки"
+      close_id="close-user-settings"
+      close_label="Закрыть настройки"
+      return_focus="#open-user-settings"
+      on_cancel={JS.push("close_user_settings")}
+    >
+      <div id="user-settings-list" class="user-settings-list">
+        <section class="user-setting-row user-setting-row--theme">
+          <div class="user-setting-copy">
+            <h3>Тема оформления</h3>
+            <p>Использовать системную, светлую или тёмную тему.</p>
+          </div>
+          <.theme_switcher id="settings-theme-switcher" show_labels />
+        </section>
+        <section class="user-setting-row">
+          <div class="user-setting-copy">
+            <h3>Браузерные уведомления</h3>
+            <p>Получать уведомления о новых сообщениях, когда Orbit не открыт.</p>
+          </div>
+          <button
+            id="notifications-toggle"
+            type="button"
+            class="setting-toggle"
+            data-notifications-toggle
+            aria-pressed={to_string(@push_enabled?)}
+          >
+            <span class="notifications-icon" data-notifications-icon="on"><.icon
+              name="hero-bell"
+              class="size-4"
+            /></span>
+            <span class="notifications-icon" data-notifications-icon="off" hidden><.icon
+              name="hero-bell-slash"
+              class="size-4"
+            /></span>
+            <span data-notifications-status>{if @push_enabled?, do: "Включены", else: "Выключены"}</span>
+          </button>
+        </section>
+        <section class="user-setting-row">
+          <div class="user-setting-copy">
+            <h3>Звук уведомлений</h3>
+            <p>Проигрывать звук при новых сообщениях.</p>
+          </div>
+          <button
+            id="notification-sound-toggle"
+            type="button"
+            class="setting-toggle"
+            phx-hook="NotificationSound"
+            data-notification-sound-toggle
+            aria-pressed="true"
+          >
+            <span class="notifications-icon" data-notification-sound-icon="on"><.icon
+              name="hero-speaker-wave"
+              class="size-4"
+            /></span>
+            <span class="notifications-icon" data-notification-sound-icon="off" hidden><.icon
+              name="hero-speaker-x-mark"
+              class="size-4"
+            /></span>
+            <span data-notification-sound-status>Включён</span>
+          </button>
+        </section>
+        <section class="user-setting-row">
+          <div class="user-setting-copy">
+            <h3>Выйти из аккаунта</h3>
+            <p>Завершить текущий сеанс на этом устройстве.</p>
+          </div>
+          <.link href={~p"/logout"} method="delete" id="logout-link" class="settings-logout">
+            Выйти
+          </.link>
+        </section>
+      </div>
+    </.dialog>
     """
   end
 
@@ -345,53 +386,43 @@ defmodule ElixirChatWeb.ChatLive.Components do
 
   def channel_create(assigns) do
     ~H"""
-    <div
+    <.dialog
       id="channel-create"
-      class="channel-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="channel-create-title"
+      title="Создать канал"
+      close_id="close-channel-create"
+      close_label="Закрыть создание канала"
+      return_focus="#open-channel-create"
+      on_cancel={JS.push("close_channel_create")}
     >
-      <section class="channel-modal" phx-window-keydown="close_channel_create" phx-key="escape">
-        <header>
-          <h2 id="channel-create-title">Создать канал</h2>
-          <button
-            id="close-channel-create"
-            type="button"
-            phx-click="close_channel_create"
-            aria-label="Закрыть создание канала"
-          ><.icon name="hero-x-mark" class="size-5" /></button>
-        </header>
-        <.form
-          for={@form}
-          id="create-channel-form"
-          phx-change="validate_channel"
-          phx-submit="create_channel"
-        >
-          <.input
-            field={@form[:name]}
-            id="new-channel-name"
-            label="Название"
-            placeholder="team-updates"
-            autocomplete="off"
-          />
-          <.input
-            field={@form[:description]}
-            id="new-channel-description"
-            label="Описание"
-            type="textarea"
-          />
-          <.input
-            field={@form[:kind]}
-            id="new-channel-kind"
-            label="Доступ"
-            type="select"
-            options={[{"Публичный", :public}, {"Приватный", :private}]}
-          />
-          <button id="create-channel" type="submit" class="channel-primary-action">Создать канал</button>
-        </.form>
-      </section>
-    </div>
+      <.form
+        for={@form}
+        id="create-channel-form"
+        phx-change="validate_channel"
+        phx-submit="create_channel"
+      >
+        <.input
+          field={@form[:name]}
+          id="new-channel-name"
+          label="Название"
+          placeholder="team-updates"
+          autocomplete="off"
+        />
+        <.input
+          field={@form[:description]}
+          id="new-channel-description"
+          label="Описание"
+          type="textarea"
+        />
+        <.input
+          field={@form[:kind]}
+          id="new-channel-kind"
+          label="Доступ"
+          type="select"
+          options={[{"Публичный", :public}, {"Приватный", :private}]}
+        />
+        <.button id="create-channel" type="submit">Создать канал</.button>
+      </.form>
+    </.dialog>
     """
   end
 
@@ -399,39 +430,30 @@ defmodule ElixirChatWeb.ChatLive.Components do
 
   def channel_catalog(assigns) do
     ~H"""
-    <div
+    <.dialog
       id="channel-catalog"
-      class="channel-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="channel-catalog-title"
+      title="Каталог каналов"
+      close_id="close-channel-catalog"
+      close_label="Закрыть каталог"
+      return_focus="#open-channel-catalog"
+      on_cancel={JS.push("close_channel_catalog")}
     >
-      <section class="channel-modal" phx-window-keydown="close_channel_catalog" phx-key="escape">
-        <header>
-          <h2 id="channel-catalog-title">Каталог каналов</h2>
-          <button
-            id="close-channel-catalog"
-            type="button"
-            phx-click="close_channel_catalog"
-            aria-label="Закрыть каталог"
-          ><.icon name="hero-x-mark" class="size-5" /></button>
-        </header>
-        <div id="available-channel-list" class="available-channel-list">
-          <article :for={channel <- @channels} id={"available-channel-#{channel.id}"}>
-            <div>
-              <strong>#{channel.name}</strong><p>{channel.description || "Без описания"}</p>
-            </div>
-            <button
-              id={"join-channel-#{channel.id}"}
-              type="button"
-              phx-click="join_channel"
-              phx-value-channel-id={channel.id}
-            >Вступить</button>
-          </article>
-          <p :if={@channels == []} id="available-channels-empty">Нет новых публичных каналов.</p>
-        </div>
-      </section>
-    </div>
+      <div id="available-channel-list" class="available-channel-list">
+        <article :for={channel <- @channels} id={"available-channel-#{channel.id}"}>
+          <div>
+            <strong>#{channel.name}</strong><p>{channel.description || "Без описания"}</p>
+          </div>
+          <.button
+            id={"join-channel-#{channel.id}"}
+            size={:sm}
+            variant={:secondary}
+            phx-click="join_channel"
+            phx-value-channel-id={channel.id}
+          >Вступить</.button>
+        </article>
+        <p :if={@channels == []} id="available-channels-empty">Нет новых публичных каналов.</p>
+      </div>
+    </.dialog>
     """
   end
 
@@ -443,105 +465,95 @@ defmodule ElixirChatWeb.ChatLive.Components do
 
   def channel_settings(assigns) do
     ~H"""
-    <div
+    <.dialog
       id="channel-settings"
-      class="channel-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="channel-settings-title"
+      title={"Настройки ##{@channel.name}"}
+      close_id="close-channel-settings"
+      close_label="Закрыть настройки"
+      return_focus="#open-channel-settings"
+      on_cancel={JS.push("close_channel_settings")}
     >
-      <section class="channel-modal" phx-window-keydown="close_channel_settings" phx-key="escape">
-        <header>
-          <h2 id="channel-settings-title">Настройки #<span>{@channel.name}</span></h2>
-          <button
-            id="close-channel-settings"
-            type="button"
-            phx-click="close_channel_settings"
-            aria-label="Закрыть настройки"
-          ><.icon name="hero-x-mark" class="size-5" /></button>
-        </header>
-        <section
-          :if={@channel.owner_id != @current_user.id}
-          id="channel-details"
-          class="channel-details"
-          aria-label="Информация о канале"
-        >
-          <div>
-            <strong>Описание</strong>
-            <p>{@channel.description || "Описание не добавлено"}</p>
-          </div>
-          <div>
-            <strong>Доступ</strong>
-            <p>{if @channel.kind == :public, do: "Публичный канал", else: "Приватный канал"}</p>
-          </div>
-        </section>
-        <.form
-          :if={@channel.owner_id == @current_user.id}
-          for={@form}
-          id="edit-channel-form"
-          phx-submit="update_channel"
-        >
-          <.input
-            field={@form[:name]}
-            id="edit-channel-name"
-            label="Название"
-            disabled={@channel.is_general}
-          />
-          <.input
-            field={@form[:description]}
-            id="edit-channel-description"
-            label="Описание"
-            type="textarea"
-          />
-          <.input
-            field={@form[:kind]}
-            id="edit-channel-kind"
-            label="Доступ"
-            type="select"
-            disabled={@channel.is_general}
-            options={[{"Публичный", :public}, {"Приватный", :private}]}
-          />
-          <button id="update-channel" type="submit" class="channel-primary-action">Сохранить</button>
-        </.form>
-        <div :if={@channel.kind == :private} id="channel-invite-panel">
-          <.form for={@invite_form} id="invite-search-form" phx-change="search_invitable_users">
-            <.input
-              field={@invite_form[:query]}
-              id="invite-search-query"
-              type="search"
-              label="Добавить участника"
-              placeholder="Имя или @логин"
-              phx-debounce="200"
-              autocomplete="off"
-            />
-          </.form>
-          <button
-            :for={user <- @invite_results}
-            id={"invite-user-#{user.id}"}
-            type="button"
-            class="member-row"
-            phx-click="invite_member"
-            phx-value-user-id={user.id}
-          >{user.display_name} <small>@{user.login}<span :if={user.online?}> · в сети</span></small></button>
+      <section
+        :if={@channel.owner_id != @current_user.id}
+        id="channel-details"
+        class="channel-details"
+        aria-label="Информация о канале"
+      >
+        <div>
+          <strong>Описание</strong>
+          <p>{@channel.description || "Описание не добавлено"}</p>
         </div>
-        <button
-          :if={@channel.owner_id != @current_user.id && !@channel.is_general}
-          id="leave-channel"
-          type="button"
-          class="channel-danger-action"
-          phx-click="leave_channel"
-          data-confirm="Покинуть этот канал?"
-        >Выйти из канала</button>
-        <button
-          :if={@channel.owner_id == @current_user.id && !@channel.is_general}
-          id="archive-channel"
-          type="button"
-          class="channel-danger-action"
-          phx-click="archive_channel"
-          data-confirm="Архивировать канал? История сохранится, но доступ будет закрыт."
-        >Архивировать канал</button>
+        <div>
+          <strong>Доступ</strong>
+          <p>{if @channel.kind == :public, do: "Публичный канал", else: "Приватный канал"}</p>
+        </div>
       </section>
-    </div>
+      <.form
+        :if={@channel.owner_id == @current_user.id}
+        for={@form}
+        id="edit-channel-form"
+        phx-submit="update_channel"
+      >
+        <.input
+          field={@form[:name]}
+          id="edit-channel-name"
+          label="Название"
+          disabled={@channel.is_general}
+        />
+        <.input
+          field={@form[:description]}
+          id="edit-channel-description"
+          label="Описание"
+          type="textarea"
+        />
+        <.input
+          field={@form[:kind]}
+          id="edit-channel-kind"
+          label="Доступ"
+          type="select"
+          disabled={@channel.is_general}
+          options={[{"Публичный", :public}, {"Приватный", :private}]}
+        />
+        <.button id="update-channel" type="submit">Сохранить</.button>
+      </.form>
+      <div :if={@channel.kind == :private} id="channel-invite-panel">
+        <.form for={@invite_form} id="invite-search-form" phx-change="search_invitable_users">
+          <.input
+            field={@invite_form[:query]}
+            id="invite-search-query"
+            type="search"
+            label="Добавить участника"
+            placeholder="Имя или @логин"
+            phx-debounce="200"
+            autocomplete="off"
+          />
+        </.form>
+        <button
+          :for={user <- @invite_results}
+          id={"invite-user-#{user.id}"}
+          type="button"
+          class="member-row"
+          phx-click="invite_member"
+          phx-value-user-id={user.id}
+        >{user.display_name} <small>@{user.login}<span :if={user.online?}> · в сети</span></small></button>
+      </div>
+      <.button
+        :if={@channel.owner_id != @current_user.id && !@channel.is_general}
+        id="leave-channel"
+        type="button"
+        variant={:danger}
+        phx-click="leave_channel"
+        data-confirm="Покинуть этот канал?"
+      >Выйти из канала</.button>
+      <.button
+        :if={@channel.owner_id == @current_user.id && !@channel.is_general}
+        id="archive-channel"
+        type="button"
+        variant={:danger}
+        phx-click="archive_channel"
+        data-confirm="Архивировать канал? История сохранится, но доступ будет закрыт."
+      >Архивировать канал</.button>
+    </.dialog>
     """
   end
 
@@ -552,85 +564,76 @@ defmodule ElixirChatWeb.ChatLive.Components do
 
   def channel_members(assigns) do
     ~H"""
-    <div
+    <.dialog
       id="channel-members-modal"
-      class="channel-modal-backdrop"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="channel-members-title"
+      title={"Участники ##{@channel.name}"}
+      title_id="channel-members-title"
+      close_id="close-channel-members"
+      close_label="Закрыть список участников"
+      return_focus="#open-channel-members"
+      on_cancel={JS.push("close_channel_members")}
     >
-      <section class="channel-modal" phx-window-keydown="close_channel_members" phx-key="escape">
-        <header>
-          <h2 id="channel-members-title">Участники #<span>{@channel.name}</span></h2>
-          <button
-            id="close-channel-members"
-            type="button"
-            phx-click="close_channel_members"
-            aria-label="Закрыть список участников"
-          ><.icon name="hero-x-mark" class="size-5" /></button>
+      <section
+        id="channel-members"
+        class="channel-members-section"
+        aria-label="Участники канала"
+      >
+        <header class="channel-members-heading">
+          <h3>Участники</h3>
+          <span>{length(@memberships)}</span>
         </header>
-        <section
-          id="channel-members"
-          class="channel-members-section"
-          aria-labelledby="channel-members-title"
+        <div
+          id="channel-member-list"
+          class="channel-member-list"
+          role="list"
+          aria-label="Список участников канала"
+          tabindex="0"
         >
-          <header class="channel-members-heading">
-            <h3>Участники</h3>
-            <span>{length(@memberships)}</span>
-          </header>
           <div
-            id="channel-member-list"
-            class="channel-member-list"
-            role="list"
-            aria-label="Список участников канала"
-            tabindex="0"
+            :for={membership <- @memberships}
+            id={"channel-member-#{membership.user.id}"}
+            class="channel-member-row"
+            role="listitem"
           >
+            <.user_avatar
+              name={membership.user.display_name}
+              user_id={membership.user.id}
+              class="channel-member-avatar"
+              online?={MapSet.member?(@online_user_ids, membership.user.id)}
+            />
+            <span class="channel-member-identity">
+              <strong>{membership.user.display_name}</strong>
+              <small>@{membership.user.login}</small>
+            </span>
+            <em :if={membership.user.id == @channel.owner_id}>администратор</em>
             <div
-              :for={membership <- @memberships}
-              id={"channel-member-#{membership.user.id}"}
-              class="channel-member-row"
-              role="listitem"
+              :if={@channel.owner_id == @current_user.id && membership.user.id != @current_user.id}
+              class="channel-member-actions"
             >
-              <.user_avatar
-                name={membership.user.display_name}
-                user_id={membership.user.id}
-                class="channel-member-avatar"
-                online?={MapSet.member?(@online_user_ids, membership.user.id)}
-              />
-              <span class="channel-member-identity">
-                <strong>{membership.user.display_name}</strong>
-                <small>@{membership.user.login}</small>
-              </span>
-              <em :if={membership.user.id == @channel.owner_id}>администратор</em>
-              <div
-                :if={@channel.owner_id == @current_user.id && membership.user.id != @current_user.id}
-                class="channel-member-actions"
-              >
-                <button
-                  id={"transfer-owner-#{membership.user.id}"}
-                  type="button"
-                  phx-click="transfer_ownership"
-                  phx-value-user-id={membership.user.id}
-                  data-confirm="Передать владение этим каналом?"
-                  title="Передать владение"
-                  aria-label={"Передать владение пользователю #{membership.user.display_name}"}
-                ><.icon name="hero-key" class="size-4" /></button>
-                <button
-                  :if={@channel.kind == :private}
-                  id={"remove-member-#{membership.user.id}"}
-                  type="button"
-                  phx-click="remove_member"
-                  phx-value-user-id={membership.user.id}
-                  data-confirm="Удалить участника из канала?"
-                  title="Удалить из канала"
-                  aria-label={"Удалить пользователя #{membership.user.display_name} из канала"}
-                ><.icon name="hero-user-minus" class="size-4" /></button>
-              </div>
+              <button
+                id={"transfer-owner-#{membership.user.id}"}
+                type="button"
+                phx-click="transfer_ownership"
+                phx-value-user-id={membership.user.id}
+                data-confirm="Передать владение этим каналом?"
+                title="Передать владение"
+                aria-label={"Передать владение пользователю #{membership.user.display_name}"}
+              ><.icon name="hero-key" class="size-4" /></button>
+              <button
+                :if={@channel.kind == :private}
+                id={"remove-member-#{membership.user.id}"}
+                type="button"
+                phx-click="remove_member"
+                phx-value-user-id={membership.user.id}
+                data-confirm="Удалить участника из канала?"
+                title="Удалить из канала"
+                aria-label={"Удалить пользователя #{membership.user.display_name} из канала"}
+              ><.icon name="hero-user-minus" class="size-4" /></button>
             </div>
           </div>
-        </section>
+        </div>
       </section>
-    </div>
+    </.dialog>
     """
   end
 
@@ -858,7 +861,11 @@ defmodule ElixirChatWeb.ChatLive.Components do
       <i
         :if={!is_nil(@online?)}
         class={["avatar-status-dot", @online? && "avatar-status-dot--online"]}
+        aria-hidden="true"
       ></i>
+      <span :if={!is_nil(@online?)} class="sr-only">
+        {if @online?, do: "в сети", else: "не в сети"}
+      </span>
     </div>
     """
   end
@@ -899,16 +906,22 @@ defmodule ElixirChatWeb.ChatLive.Components do
 
   def open_sidebar(js \\ %JS{}) do
     js
-    |> JS.show(to: "#sidebar-overlay")
+    |> JS.push_focus()
     |> JS.add_class("sidebar-open", to: "#chat-sidebar")
+    |> JS.add_class("sidebar-open", to: "#chat-shell")
+    |> JS.remove_attribute("aria-hidden", to: "#chat-sidebar")
+    |> JS.remove_attribute("inert", to: "#chat-sidebar")
     |> JS.set_attribute({"aria-expanded", "true"}, to: "#sidebar-toggle")
     |> JS.focus_first(to: "#chat-sidebar")
   end
 
   def close_sidebar(js \\ %JS{}) do
     js
-    |> JS.hide(to: "#sidebar-overlay")
     |> JS.remove_class("sidebar-open", to: "#chat-sidebar")
+    |> JS.remove_class("sidebar-open", to: "#chat-shell")
+    |> JS.set_attribute({"aria-hidden", "true"}, to: "#chat-sidebar")
+    |> JS.set_attribute({"inert", ""}, to: "#chat-sidebar")
     |> JS.set_attribute({"aria-expanded", "false"}, to: "#sidebar-toggle")
+    |> JS.pop_focus()
   end
 end

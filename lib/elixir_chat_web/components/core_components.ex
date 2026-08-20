@@ -9,11 +9,7 @@ defmodule ElixirChatWeb.CoreComponents do
   them in any way you want, based on your application growth and needs.
 
   The foundation for styling is Tailwind CSS, a utility-first CSS framework,
-  augmented with daisyUI, a Tailwind CSS plugin that provides UI components
-  and themes. Here are useful references:
-
-    * [daisyUI](https://daisyui.com/docs/intro/) - a good place to get
-      started and see the available components.
+  and the custom Orbit design primitives defined in `app.css`.
 
     * [Tailwind CSS](https://tailwindcss.com) - the foundational framework
       we build on. You will use it for layout, sizing, flexbox, grid, and
@@ -63,14 +59,10 @@ defmodule ElixirChatWeb.CoreComponents do
       id={@id}
       phx-click={JS.push("lv:clear-flash", value: %{key: @kind}) |> hide("##{@id}")}
       role="alert"
-      class="toast toast-top toast-end z-50"
+      class="orbit-toast"
       {@rest}
     >
-      <div class={[
-        "alert w-80 sm:w-96 max-w-80 sm:max-w-96 text-wrap",
-        @kind == :info && "alert-info",
-        @kind == :error && "alert-error"
-      ]}>
+      <div class={["orbit-alert", "orbit-alert--#{@kind}"]}>
         <.icon :if={@kind == :info} name="hero-information-circle" class="size-5 shrink-0" />
         <.icon :if={@kind == :error} name="hero-exclamation-circle" class="size-5 shrink-0" />
         <div>
@@ -78,9 +70,9 @@ defmodule ElixirChatWeb.CoreComponents do
           <p>{msg}</p>
         </div>
         <div class="flex-1" />
-        <button type="button" class="group self-start cursor-pointer" aria-label={gettext("close")}>
-          <.icon name="hero-x-mark" class="size-5 opacity-40 group-hover:opacity-70" />
-        </button>
+        <.icon_button label={gettext("close")} variant={:ghost} size={:sm}>
+          <.icon name="hero-x-mark" class="size-5" />
+        </.icon_button>
       </div>
     </div>
     """
@@ -95,32 +87,142 @@ defmodule ElixirChatWeb.CoreComponents do
       <.button phx-click="go" variant="primary">Send!</.button>
       <.button navigate={~p"/"}>Home</.button>
   """
-  attr :rest, :global, include: ~w(href navigate patch method download name value disabled)
-  attr :class, :any
-  attr :variant, :string, values: ~w(primary)
+  attr :rest, :global, include: ~w(href navigate patch method download name value disabled type)
+  attr :class, :any, default: nil
+  attr :variant, :atom, values: [:primary, :secondary, :danger, :ghost], default: :primary
+  attr :size, :atom, values: [:sm, :md], default: :md
+  attr :loading, :boolean, default: false
   slot :inner_block, required: true
 
   def button(%{rest: rest} = assigns) do
-    variants = %{"primary" => "btn-primary", nil => "btn-primary btn-soft"}
-
-    assigns =
-      assign_new(assigns, :class, fn ->
-        ["btn", Map.fetch!(variants, assigns[:variant])]
-      end)
-
     if rest[:href] || rest[:navigate] || rest[:patch] do
       ~H"""
-      <.link class={@class} {@rest}>
+      <.link
+        class={["orbit-button", "orbit-button--#{@variant}", "orbit-button--#{@size}", @class]}
+        {@rest}
+      >
         {render_slot(@inner_block)}
       </.link>
       """
     else
       ~H"""
-      <button class={@class} {@rest}>
-        {render_slot(@inner_block)}
+      <button
+        class={["orbit-button", "orbit-button--#{@variant}", "orbit-button--#{@size}", @class]}
+        aria-busy={@loading && "true"}
+        {@rest}
+      >
+        <.icon :if={@loading} name="hero-arrow-path" class="orbit-button-spinner size-4" />
+        <span class={@loading && "sr-only"}>{render_slot(@inner_block)}</span>
       </button>
       """
     end
+  end
+
+  attr :label, :string, required: true
+  attr :variant, :atom, values: [:primary, :secondary, :danger, :ghost], default: :ghost
+  attr :size, :atom, values: [:sm, :md], default: :md
+  attr :class, :any, default: nil
+  attr :rest, :global, include: ~w(disabled form name value title phx-click phx-value-id)
+  slot :inner_block, required: true
+
+  def icon_button(assigns) do
+    ~H"""
+    <button
+      type="button"
+      class={["orbit-icon-button", "orbit-button--#{@variant}", "orbit-button--#{@size}", @class]}
+      aria-label={@label}
+      {@rest}
+    >{render_slot(@inner_block)}</button>
+    """
+  end
+
+  attr :id, :string, required: true
+  attr :title, :string, required: true
+  attr :title_id, :string, default: nil
+  attr :on_cancel, :any, required: true
+  attr :size, :atom, values: [:sm, :md, :lg], default: :md
+  attr :close_id, :string, default: nil
+  attr :close_label, :string, default: nil
+  attr :return_focus, :string, default: nil
+  slot :inner_block, required: true
+
+  def dialog(assigns) do
+    remove =
+      if assigns.return_focus,
+        do: JS.pop_focus() |> JS.focus(to: assigns.return_focus),
+        else: JS.pop_focus()
+
+    assigns =
+      assigns
+      |> assign(:resolved_title_id, assigns.title_id || "#{assigns.id}-title")
+      |> assign(:remove_dialog, remove)
+
+    ~H"""
+    <div
+      id={@id}
+      class="orbit-dialog-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={@resolved_title_id}
+      phx-mounted={JS.push_focus() |> JS.focus_first(to: "##{@id}-focus")}
+      phx-remove={@remove_dialog}
+    >
+      <.focus_wrap
+        id={"#{@id}-focus"}
+        class={["orbit-dialog", "orbit-dialog--#{@size}"]}
+        phx-click-away={@on_cancel}
+        phx-window-keydown={@on_cancel}
+        phx-key="escape"
+      >
+        <header class="orbit-dialog-header">
+          <h2 id={@resolved_title_id}>{@title}</h2>
+          <.icon_button
+            id={@close_id}
+            label={@close_label || gettext("close")}
+            variant={:ghost}
+            size={:sm}
+            phx-click={@on_cancel}
+          >
+            <.icon name="hero-x-mark" class="size-5" />
+          </.icon_button>
+        </header>
+        {render_slot(@inner_block)}
+      </.focus_wrap>
+    </div>
+    """
+  end
+
+  attr :id, :string, default: "theme-switcher"
+  attr :class, :any, default: nil
+  attr :show_labels, :boolean, default: false
+
+  def theme_switcher(assigns) do
+    ~H"""
+    <div
+      id={@id}
+      class={["orbit-theme-switcher", @show_labels && "orbit-theme-switcher--labelled", @class]}
+      role="group"
+      aria-label="Тема оформления"
+    >
+      <button
+        :for={
+          {value, label, short_label, icon} <- [
+            {"system", "Системная тема", "Системная", "hero-computer-desktop-micro"},
+            {"light", "Светлая тема", "Светлая", "hero-sun-micro"},
+            {"dark", "Тёмная тема", "Тёмная", "hero-moon-micro"}
+          ]
+        }
+        type="button"
+        data-phx-theme={value}
+        phx-click={JS.dispatch("phx:set-theme")}
+        aria-label={label}
+        aria-pressed="false"
+      >
+        <.icon name={icon} class="size-4" />
+        <span :if={@show_labels}>{short_label}</span>
+      </button>
+    </div>
+    """
   end
 
   @doc """
@@ -212,7 +314,7 @@ defmodule ElixirChatWeb.CoreComponents do
       end)
 
     ~H"""
-    <div class="fieldset mb-2">
+    <div class="orbit-field-group">
       <label for={@id}>
         <input
           type="hidden"
@@ -221,14 +323,14 @@ defmodule ElixirChatWeb.CoreComponents do
           disabled={@rest[:disabled]}
           form={@rest[:form]}
         />
-        <span class="label">
+        <span class="orbit-checkbox-label">
           <input
             type="checkbox"
             id={@id}
             name={@name}
             value="true"
             checked={@checked}
-            class={@class || "checkbox checkbox-sm"}
+            class={@class || "orbit-checkbox"}
             {@rest}
           />{@label}
         </span>
@@ -240,13 +342,13 @@ defmodule ElixirChatWeb.CoreComponents do
 
   def input(%{type: "select"} = assigns) do
     ~H"""
-    <div class="fieldset mb-2">
+    <div class="orbit-field-group">
       <label for={@id}>
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span :if={@label} class="orbit-field-label">{@label}</span>
         <select
           id={@id}
           name={@name}
-          class={[@class || "w-full select", @errors != [] && (@error_class || "select-error")]}
+          class={[@class || "orbit-field", @errors != [] && (@error_class || "orbit-field--error")]}
           multiple={@multiple}
           {@rest}
         >
@@ -261,15 +363,15 @@ defmodule ElixirChatWeb.CoreComponents do
 
   def input(%{type: "textarea"} = assigns) do
     ~H"""
-    <div class="fieldset mb-2">
+    <div class="orbit-field-group">
       <label for={@id}>
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span :if={@label} class="orbit-field-label">{@label}</span>
         <textarea
           id={@id}
           name={@name}
           class={[
-            @class || "w-full textarea",
-            @errors != [] && (@error_class || "textarea-error")
+            @class || "orbit-field",
+            @errors != [] && (@error_class || "orbit-field--error")
           ]}
           {@rest}
         >{Phoenix.HTML.Form.normalize_value("textarea", @value)}</textarea>
@@ -282,17 +384,17 @@ defmodule ElixirChatWeb.CoreComponents do
   # All other inputs text, datetime-local, url, password, etc. are handled here...
   def input(assigns) do
     ~H"""
-    <div class="fieldset mb-2">
+    <div class="orbit-field-group">
       <label for={@id}>
-        <span :if={@label} class="label mb-1">{@label}</span>
+        <span :if={@label} class="orbit-field-label">{@label}</span>
         <input
           type={@type}
           name={@name}
           id={@id}
           value={Phoenix.HTML.Form.normalize_value(@type, @value)}
           class={[
-            @class || "w-full input",
-            @errors != [] && (@error_class || "input-error")
+            @class || "orbit-field",
+            @errors != [] && (@error_class || "orbit-field--error")
           ]}
           {@rest}
         />
@@ -305,7 +407,7 @@ defmodule ElixirChatWeb.CoreComponents do
   # Helper used by inputs to generate form errors
   defp error(assigns) do
     ~H"""
-    <p class="mt-1.5 flex gap-2 items-center text-sm text-error">
+    <p class="orbit-field-error">
       <.icon name="hero-exclamation-circle" class="size-5" />
       {render_slot(@inner_block)}
     </p>
@@ -367,7 +469,7 @@ defmodule ElixirChatWeb.CoreComponents do
       end
 
     ~H"""
-    <table class="table table-zebra">
+    <table class="orbit-table">
       <thead>
         <tr>
           <th :for={col <- @col}>{col[:label]}</th>
@@ -414,9 +516,9 @@ defmodule ElixirChatWeb.CoreComponents do
 
   def list(assigns) do
     ~H"""
-    <ul class="list">
-      <li :for={item <- @item} class="list-row">
-        <div class="list-col-grow">
+    <ul class="orbit-list">
+      <li :for={item <- @item} class="orbit-list-row">
+        <div>
           <div class="font-bold">{item.title}</div>
           <div>{render_slot(item)}</div>
         </div>

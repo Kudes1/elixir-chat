@@ -58,13 +58,13 @@ defmodule ElixirChatWeb.AdminUsersLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_scope={@current_scope}>
-      <main class="mx-auto max-w-4xl p-8">
+      <main class="admin-page">
         <h1 class="text-3xl font-bold">Пользователи Orbit</h1>
         <.form
           for={@invite_form}
           id="invite-user-form"
           phx-submit="invite"
-          class="my-8 grid gap-3 md:grid-cols-3"
+          class="admin-invite-form"
         >
           <.input field={@invite_form[:login]} id="invite-login" label="Логин" required />
           <.input
@@ -73,44 +73,50 @@ defmodule ElixirChatWeb.AdminUsersLive do
             label="Отображаемое имя"
             required
           />
-          <button id="create-invitation" class="btn btn-primary self-end">Создать приглашение</button>
+          <.button id="create-invitation" class="self-end">Создать приглашение</.button>
         </.form>
-        <div :if={@invite_path} id="one-time-link" class="alert alert-warning break-all">
+        <div :if={@invite_path} id="one-time-link" class="admin-one-time-link">
           Скопируйте путь сейчас — он больше не показывается. Добавьте его к адресу нужного домена: {@invite_path}
         </div>
-        <div id="users" phx-update="stream" class="mt-8 space-y-3">
+        <div id="users" phx-update="stream" class="admin-users">
           <div
             :for={{id, user} <- @streams.users}
             id={id}
-            class="flex items-center justify-between rounded border p-4"
+            class="admin-user-row"
           >
-            <div>
+            <div class="admin-user-identity">
               <strong>{user.display_name}</strong>
-              <span class="opacity-60">@{user.login} · {user.role}</span>
+              <span>@{user.login} · {user.role}</span>
             </div>
-            <div :if={user.role == :user} class="flex gap-2">
-              <button
+            <div :if={user.role == :user} class="admin-user-actions">
+              <.button
                 id={"reset-#{user.id}"}
                 phx-click="reset"
                 phx-value-id={user.id}
-                class="btn btn-sm"
-              >Сброс</button>
-              <button
+                variant={:secondary}
+                size={:sm}
+              >Сброс</.button>
+              <.button
                 id={"toggle-#{user.id}"}
                 phx-click="toggle"
                 phx-value-id={user.id}
-                class="btn btn-sm"
-              >{if user.disabled_at, do: "Включить", else: "Заблокировать"}</button>
+                variant={if user.disabled_at, do: :secondary, else: :danger}
+                size={:sm}
+                data-confirm={
+                  if is_nil(user.disabled_at), do: "Заблокировать пользователя?", else: nil
+                }
+              >{if user.disabled_at, do: "Включить", else: "Заблокировать"}</.button>
             </div>
           </div>
         </div>
-        <button
+        <.button
           :if={@has_more_users?}
           id="load-more-users"
           type="button"
           phx-click="load_more_users"
-          class="btn mt-4 w-full"
-        >Показать ещё</button>
+          class="mt-4 w-full"
+          variant={:secondary}
+        >Показать ещё</.button>
       </main>
     </Layouts.app>
     """

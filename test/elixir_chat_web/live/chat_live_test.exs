@@ -706,8 +706,58 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert has_element?(view, "#open-direct-search[aria-label='Начать личный диалог']")
     assert has_element?(view, "#current-user .profile-avatar", "И")
     assert has_element?(view, "#current-user-login", "@#{user.login}")
+    assert has_element?(view, "#current-user > #open-user-settings[aria-expanded='false']")
+    refute has_element?(view, "#current-user > :not(#open-user-settings)")
     refute has_element?(view, ".workspace-sidebar")
     refute has_element?(view, ".workspace-mark")
+  end
+
+  test "opens and closes all user settings from the profile button", %{
+    conn: conn,
+    general: general,
+    user: user
+  } do
+    {:ok, view, _html} = live(log_in_user(conn, user), ~p"/channels/#{general.public_id}")
+
+    refute has_element?(view, "#user-settings")
+    view |> element("#open-user-settings") |> render_click()
+
+    assert has_element?(view, "#open-user-settings[aria-expanded='true']")
+    assert has_element?(view, "#user-settings[role='dialog'][phx-remove*='open-user-settings']")
+    assert has_element?(view, "#user-settings-list", "Тема оформления")
+
+    assert has_element?(
+             view,
+             "#user-settings-list",
+             "Использовать системную, светлую или тёмную тему."
+           )
+
+    assert has_element?(view, "#user-settings-list", "Браузерные уведомления")
+
+    assert has_element?(
+             view,
+             "#user-settings-list",
+             "Получать уведомления о новых сообщениях, когда Orbit не открыт."
+           )
+
+    assert has_element?(view, "#user-settings-list", "Звук уведомлений")
+    assert has_element?(view, "#user-settings-list", "Проигрывать звук при новых сообщениях.")
+    assert has_element?(view, "#user-settings-list", "Выйти из аккаунта")
+
+    assert has_element?(
+             view,
+             "#user-settings-list",
+             "Завершить текущий сеанс на этом устройстве."
+           )
+
+    assert has_element?(view, "#settings-theme-switcher", "Системная")
+    assert has_element?(view, "#settings-theme-switcher", "Светлая")
+    assert has_element?(view, "#settings-theme-switcher", "Тёмная")
+    assert has_element?(view, "#user-settings-list #logout-link", "Выйти")
+
+    view |> element("#close-user-settings") |> render_click()
+    refute has_element?(view, "#user-settings")
+    assert has_element?(view, "#open-user-settings[aria-expanded='false']")
   end
 
   test "renders accessible mobile sidebar controls", %{
@@ -1738,6 +1788,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     assert_reply view, %{ok: true}
     assert [subscription] = Notifications.list_subscriptions(user.id)
     assert subscription.endpoint == "https://fcm.googleapis.com/live-success"
+    view |> element("#open-user-settings") |> render_click()
     assert has_element?(view, "#notifications-toggle[aria-pressed='true']")
   end
 
@@ -1757,6 +1808,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
 
     assert_reply view, %{ok: false}
     assert Notifications.list_subscriptions(user.id) == []
+    view |> element("#open-user-settings") |> render_click()
     assert has_element?(view, "#notifications-toggle[aria-pressed='false']")
   end
 
@@ -1771,6 +1823,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
 
     assert_reply view, %{ok: false}
     assert Notifications.list_subscriptions(user.id) == []
+    view |> element("#open-user-settings") |> render_click()
     assert has_element?(view, "#notifications-toggle[aria-pressed='false']")
   end
 
@@ -1792,6 +1845,7 @@ defmodule ElixirChatWeb.ChatLiveTest do
     render_hook(view, "push_unsubscribe", %{"endpoint" => "https://fcm.googleapis.com/remove-me"})
     assert_reply view, %{ok: true}
     assert Notifications.list_subscriptions(user.id) == []
+    view |> element("#open-user-settings") |> render_click()
     assert has_element?(view, "#notifications-toggle[aria-pressed='false']")
   end
 
