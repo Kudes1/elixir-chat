@@ -89,7 +89,7 @@
       <div class="message-window">
         <div
           id={"message-list-#{@channel.id}"}
-          class="message-list"
+          class={["message-list", @time_zone_pending? && "message-list--pending"]}
           phx-update="stream"
           phx-hook="MessageList"
           data-has-older={to_string(@has_older_messages?)}

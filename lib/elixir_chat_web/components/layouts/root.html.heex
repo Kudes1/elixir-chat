@@ -5,6 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
     <.live_title default="Orbit" suffix=" · Командный чат" phx-no-format>{assigns[:page_title]}</.live_title>
+    <script>
+      <%= Phoenix.HTML.raw("""
+      (() => {
+        const theme = localStorage.getItem(\"phx:theme\")
+        const systemTheme = matchMedia(\"(prefers-color-scheme: dark)\").matches ? \"dark\" : \"light\"
+        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+
+        document.documentElement.setAttribute(\"data-theme\", theme || systemTheme)
+        document.documentElement.setAttribute(\"data-theme-source\", theme ? \"user\" : \"system\")
+        document.cookie = \"orbit_time_zone=\" + timeZone + \"; Path=/; Max-Age=31536000; SameSite=Lax\"
+      })()
+      """) %>
+    </script>
     <link phx-track-static rel="stylesheet" href={~p"/assets/css/app.css"} />
     <script defer phx-track-static type="text/javascript" src={~p"/assets/js/app.js"}>
     </script>

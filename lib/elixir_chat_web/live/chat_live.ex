@@ -19,7 +19,7 @@ defmodule ElixirChatWeb.ChatLive do
   @catch_up_max_events 2_000
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
     user = socket.assigns.current_scope.user
 
     if connected?(socket) do
@@ -53,7 +53,8 @@ defmodule ElixirChatWeb.ChatLive do
     {:ok,
      socket
      |> assign(:page_title, "Orbit")
-     |> assign(:time_zone, browser_time_zone(socket))
+     |> assign(:time_zone, browser_time_zone(socket, session))
+     |> assign(:time_zone_pending?, !connected?(socket))
      |> assign(:missed_event_count, missed_event_count)
      |> assign(:catching_up?, catching_up?)
      |> assign(:connection_state, ConnectionState.initial_state(catching_up?))
@@ -93,7 +94,7 @@ defmodule ElixirChatWeb.ChatLive do
      |> stream(:messages, [])}
   end
 
-  defp browser_time_zone(socket) do
+  defp browser_time_zone(socket, session) do
     time_zone =
       if connected?(socket) do
         case get_connect_params(socket) do
@@ -101,7 +102,7 @@ defmodule ElixirChatWeb.ChatLive do
           _params -> @default_time_zone
         end
       else
-        @default_time_zone
+        session["time_zone"] || @default_time_zone
       end
 
     case DateTime.shift_zone(DateTime.utc_now(), time_zone) do

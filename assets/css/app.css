@@ -23,6 +23,7 @@
 
 /* Make LiveView wrapper divs transparent for layout */
 [data-phx-session], [data-phx-teleported-src] { display: contents }
+.message-list--pending { visibility: hidden; }
 
 /* Orbit chat interface */
 

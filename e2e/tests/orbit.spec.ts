@@ -51,6 +51,39 @@ test("theme persists and system follows media", async ({page}) => {
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark")
 })
 
+test("saved theme applies before first paint", async ({page}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("phx:theme", "dark")
+
+    new PerformanceObserver(entries => {
+      if (entries.getEntries().some(entry => entry.name === "first-contentful-paint")) {
+        document.documentElement.setAttribute("data-first-paint-theme", document.documentElement.dataset.theme || "")
+      }
+    }).observe({type: "paint", buffered: true})
+  })
+
+  await page.route("**/assets/js/app.js", async route => {
+    await new Promise(resolve => setTimeout(resolve, 250))
+    await route.continue()
+  })
+  await page.goto("/login")
+
+  await expect(page.locator("html")).toHaveAttribute("data-first-paint-theme", "dark")
+})
+
+test("messages wait for the browser time zone before becoming visible", async ({page}) => {
+  await login(page)
+  await page.route("**/assets/js/app.js", async route => {
+    await new Promise(resolve => setTimeout(resolve, 500))
+    await route.continue()
+  })
+  await page.reload({waitUntil: "commit"})
+
+  const messageList = page.locator("[id^='message-list-']")
+  await expect(messageList).toBeHidden()
+  await expect(messageList).toBeVisible()
+})
+
 test("admin list scrolls and remains inside narrow viewport", async ({page}) => {
   await login(page, "admin")
   await page.goto("/admin/users")
