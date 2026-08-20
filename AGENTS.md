@@ -1,5 +1,11 @@
 # Repository Guidelines
 
+## Code style
+ - Write compact code.
+ - Try to write in a style that allows the code to be reused.
+ - Make sure the code is easy to review.
+ 
+
 ## Docker-first workflow
 
 The application **must be built and run with Docker Compose**. Do not rely on a host Elixir, Node, or PostgreSQL installation for normal development or verification.
